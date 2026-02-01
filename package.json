@@ -1,0 +1,80 @@
+{
+  "name": "@aitytech/agentkits-memory",
+  "version": "1.0.1",
+  "type": "module",
+  "description": "Persistent memory system for AI coding assistants via MCP. Works with Claude Code, Cursor, Copilot, Windsurf, Cline.",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": "./dist/index.js",
+    "./hooks": "./dist/hooks/index.js",
+    "./mcp": "./dist/mcp/index.js",
+    "./*": "./dist/*.js"
+  },
+  "bin": {
+    "agentkits-memory-hook": "./dist/hooks/cli.js",
+    "agentkits-memory-server": "./dist/mcp/server.js",
+    "agentkits-memory-viewer": "./dist/cli/viewer.js",
+    "agentkits-memory-web": "./dist/cli/web-viewer.js",
+    "agentkits-memory-save": "./dist/cli/save.js",
+    "agentkits-memory-setup": "./dist/cli/setup.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage",
+    "typecheck": "tsc --noEmit",
+    "lint": "echo \"Memory lint pending\" && exit 0",
+    "clean": "rm -rf dist",
+    "prepublishOnly": "npm run build"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/aitytech/agentkits-memory"
+  },
+  "homepage": "https://agentkits.net",
+  "author": "AityTech",
+  "publishConfig": {
+    "access": "public"
+  },
+  "dependencies": {
+    "sql.js": "^1.10.3"
+  },
+  "optionalDependencies": {
+    "better-sqlite3": "^11.0.0"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.11",
+    "@types/node": "^20.0.0",
+    "@vitest/coverage-v8": "^4.0.18",
+    "typescript": "^5.3.0",
+    "vitest": "^4.0.16"
+  },
+  "files": [
+    "dist",
+    "src",
+    "assets",
+    "hooks.json",
+    "LICENSE",
+    "README.md"
+  ],
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "ai-coding",
+    "memory",
+    "sqlite",
+    "vector-search",
+    "hnsw",
+    "claude-code",
+    "cursor",
+    "copilot",
+    "windsurf",
+    "cline",
+    "agentkits"
+  ],
+  "license": "MIT",
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
