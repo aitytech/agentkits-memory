@@ -1,62 +1,20 @@
-import { describe, it, expect, beforeEach, afterEach, beforeAll } from 'vitest';
-import { fileURLToPath } from 'url';
-import { dirname, join } from 'path';
-import { readFileSync, existsSync } from 'fs';
-import type { Database, SqlJsStatic } from 'sql.js';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import Database from 'better-sqlite3';
+import type { Database as BetterDatabase } from 'better-sqlite3';
 import {
   HybridSearchEngine,
   createHybridSearchEngine,
 } from '../hybrid-search.js';
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
-
-/**
- * Helper to load SQL.js with FTS5 support if available
- * Falls back to regular sql.js if sql.js-fts5 not installed
- */
-async function loadSqlJs(): Promise<{ SQL: SqlJsStatic; hasFts5: boolean }> {
-  // Try sql.js-fts5 first (has FTS5 support)
-  try {
-    const initSqlJsFts5 = (await import('sql.js-fts5')).default;
-    // Locate the WASM file for sql.js-fts5
-    const fts5WasmPath = join(__dirname, '../../../node_modules/sql.js-fts5/dist/sql-wasm.wasm');
-
-    if (existsSync(fts5WasmPath)) {
-      const wasmBinary = readFileSync(fts5WasmPath);
-      const SQL = await initSqlJsFts5({ wasmBinary });
-      return { SQL, hasFts5: true };
-    }
-  } catch (e) {
-    // Fall through to regular sql.js
-  }
-
-  // Fall back to regular sql.js
-  const initSqlJs = (await import('sql.js')).default;
-  const SQL = await initSqlJs();
-  return { SQL, hasFts5: false };
-}
-
 describe('HybridSearchEngine', () => {
-  let SQL: SqlJsStatic;
-  let hasFts5Support: boolean;
-  let db: Database;
+  let db: BetterDatabase;
   let engine: HybridSearchEngine;
 
-  beforeAll(async () => {
-    const result = await loadSqlJs();
-    SQL = result.SQL;
-    // hasFts5Support is just whether the library supports it
-    // Actual FTS5 availability is tested via engine.isFtsAvailable()
-    hasFts5Support = result.hasFts5;
-    console.log(`[Test] Loaded sql.js library with potential FTS5 support: ${hasFts5Support}`);
-  });
-
   beforeEach(async () => {
-    db = new SQL.Database();
+    db = new Database(':memory:');
 
     // Create memory_entries table
-    db.run(`
+    db.exec(`
       CREATE TABLE memory_entries (
         rowid INTEGER PRIMARY KEY AUTOINCREMENT,
         id TEXT UNIQUE NOT NULL,
@@ -95,34 +53,32 @@ describe('HybridSearchEngine', () => {
     it('should detect FTS5 availability correctly', () => {
       const available = engine.isFtsAvailable();
       expect(typeof available).toBe('boolean');
-      // Log actual FTS5 availability for debugging
-      console.log(`[Test] Engine reports FTS5 available: ${available}`);
-      // If library doesn't support FTS5, engine shouldn't either
-      if (!hasFts5Support) {
-        expect(available).toBe(false);
-      }
+      // better-sqlite3 should always have FTS5
+      expect(available).toBe(true);
     });
 
-    it('should create FTS5 virtual table if available', () => {
-      if (engine.isFtsAvailable()) {
-        const result = db.exec(
-          "SELECT name FROM sqlite_master WHERE type='table' AND name='memory_fts'"
-        );
-        expect(result.length).toBe(1);
-        expect(result[0].values[0][0]).toBe('memory_fts');
-      }
+    it('should detect trigram tokenizer for CJK support', () => {
+      const tokenizer = engine.getActiveTokenizer();
+      // better-sqlite3 includes trigram tokenizer
+      expect(tokenizer).toBe('trigram');
+      expect(engine.isCjkOptimized()).toBe(true);
     });
 
-    it('should create sync triggers if FTS5 available', () => {
-      if (engine.isFtsAvailable()) {
-        const result = db.exec(
-          "SELECT name FROM sqlite_master WHERE type='trigger'"
-        );
-        const triggerNames = result[0]?.values.map((v) => v[0]) || [];
-        expect(triggerNames).toContain('memory_fts_insert');
-        expect(triggerNames).toContain('memory_fts_delete');
-        expect(triggerNames).toContain('memory_fts_update');
-      }
+    it('should create FTS5 virtual table', () => {
+      const result = db.prepare(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='memory_fts'"
+      ).get() as { name: string } | undefined;
+      expect(result?.name).toBe('memory_fts');
+    });
+
+    it('should create sync triggers', () => {
+      const result = db.prepare(
+        "SELECT name FROM sqlite_master WHERE type='trigger'"
+      ).all() as { name: string }[];
+      const triggerNames = result.map((r) => r.name);
+      expect(triggerNames).toContain('memory_fts_insert');
+      expect(triggerNames).toContain('memory_fts_delete');
+      expect(triggerNames).toContain('memory_fts_update');
     });
   });
 
@@ -136,12 +92,12 @@ describe('HybridSearchEngine', () => {
         { id: 'e4', key: 'security', content: 'OAuth2 authentication flow', namespace: 'patterns' },
       ];
 
+      const stmt = db.prepare(
+        `INSERT INTO memory_entries (id, key, content, namespace, tags, created_at, updated_at, last_accessed_at)
+         VALUES (?, ?, ?, ?, '[]', ?, ?, ?)`
+      );
       for (const entry of entries) {
-        db.run(
-          `INSERT INTO memory_entries (id, key, content, namespace, tags, created_at, updated_at, last_accessed_at)
-           VALUES (?, ?, ?, ?, '[]', ?, ?, ?)`,
-          [entry.id, entry.key, entry.content, entry.namespace, now, now, now]
-        );
+        stmt.run(entry.id, entry.key, entry.content, entry.namespace, now, now, now);
       }
 
       await engine.rebuildFtsIndex();
@@ -200,11 +156,10 @@ describe('HybridSearchEngine', () => {
   describe('CJK language support', () => {
     it('should support Japanese (日本語) search', async () => {
       const now = Date.now();
-      db.run(
+      db.prepare(
         `INSERT INTO memory_entries (id, key, content, namespace, tags, created_at, updated_at, last_accessed_at)
-         VALUES (?, ?, ?, ?, '[]', ?, ?, ?)`,
-        ['jp1', 'japanese', '日本語のテスト内容です', 'patterns', now, now, now]
-      );
+         VALUES (?, ?, ?, ?, '[]', ?, ?, ?)`
+      ).run('jp1', 'japanese', '日本語のテスト内容です', 'patterns', now, now, now);
       await engine.rebuildFtsIndex();
 
       const results = await engine.searchCompact('日本語', { includeSemantic: false });
@@ -213,11 +168,10 @@ describe('HybridSearchEngine', () => {
 
     it('should support Chinese (中文) search', async () => {
       const now = Date.now();
-      db.run(
+      db.prepare(
         `INSERT INTO memory_entries (id, key, content, namespace, tags, created_at, updated_at, last_accessed_at)
-         VALUES (?, ?, ?, ?, '[]', ?, ?, ?)`,
-        ['cn1', 'chinese', '中文测试内容', 'patterns', now, now, now]
-      );
+         VALUES (?, ?, ?, ?, '[]', ?, ?, ?)`
+      ).run('cn1', 'chinese', '中文测试内容', 'patterns', now, now, now);
       await engine.rebuildFtsIndex();
 
       const results = await engine.searchCompact('中文', { includeSemantic: false });
@@ -226,11 +180,10 @@ describe('HybridSearchEngine', () => {
 
     it('should support Korean (한국어) search', async () => {
       const now = Date.now();
-      db.run(
+      db.prepare(
         `INSERT INTO memory_entries (id, key, content, namespace, tags, created_at, updated_at, last_accessed_at)
-         VALUES (?, ?, ?, ?, '[]', ?, ?, ?)`,
-        ['kr1', 'korean', '한국어 테스트 내용입니다', 'patterns', now, now, now]
-      );
+         VALUES (?, ?, ?, ?, '[]', ?, ?, ?)`
+      ).run('kr1', 'korean', '한국어 테스트 내용입니다', 'patterns', now, now, now);
       await engine.rebuildFtsIndex();
 
       const results = await engine.searchCompact('한국어', { includeSemantic: false });
@@ -239,11 +192,10 @@ describe('HybridSearchEngine', () => {
 
     it('should support mixed CJK and English search', async () => {
       const now = Date.now();
-      db.run(
+      db.prepare(
         `INSERT INTO memory_entries (id, key, content, namespace, tags, created_at, updated_at, last_accessed_at)
-         VALUES (?, ?, ?, ?, '[]', ?, ?, ?)`,
-        ['mix1', 'mixed', 'API設計パターン Japanese API design', 'patterns', now, now, now]
-      );
+         VALUES (?, ?, ?, ?, '[]', ?, ?, ?)`
+      ).run('mix1', 'mixed', 'API設計パターン Japanese API design', 'patterns', now, now, now);
       await engine.rebuildFtsIndex();
 
       // Search Japanese
@@ -256,7 +208,7 @@ describe('HybridSearchEngine', () => {
     });
   });
 
-  describe('FTS5-specific features', () => {
+  describe('FTS5 features', () => {
     beforeEach(async () => {
       const now = Date.now();
       const entries = [
@@ -265,22 +217,17 @@ describe('HybridSearchEngine', () => {
         { id: 'e3', key: 'api', content: 'REST API with authentication headers', namespace: 'decisions' },
       ];
 
+      const stmt = db.prepare(
+        `INSERT INTO memory_entries (id, key, content, namespace, tags, created_at, updated_at, last_accessed_at)
+         VALUES (?, ?, ?, ?, '[]', ?, ?, ?)`
+      );
       for (const entry of entries) {
-        db.run(
-          `INSERT INTO memory_entries (id, key, content, namespace, tags, created_at, updated_at, last_accessed_at)
-           VALUES (?, ?, ?, ?, '[]', ?, ?, ?)`,
-          [entry.id, entry.key, entry.content, entry.namespace, now, now, now]
-        );
+        stmt.run(entry.id, entry.key, entry.content, entry.namespace, now, now, now);
       }
       await engine.rebuildFtsIndex();
     });
 
-    it('should use BM25 ranking when FTS5 available', async () => {
-      if (!engine.isFtsAvailable()) {
-        console.log('[Test] Skipping BM25 test - FTS5 not available');
-        return;
-      }
-
+    it('should use BM25 ranking', async () => {
       const results = await engine.searchCompact('authentication', { includeSemantic: false });
       // With BM25, results should be ranked by relevance
       expect(results.length).toBeGreaterThan(0);
@@ -291,17 +238,11 @@ describe('HybridSearchEngine', () => {
     });
 
     it('should sync FTS index on insert via trigger', async () => {
-      if (!engine.isFtsAvailable()) {
-        console.log('[Test] Skipping trigger test - FTS5 not available');
-        return;
-      }
-
       const now = Date.now();
-      db.run(
+      db.prepare(
         `INSERT INTO memory_entries (id, key, content, namespace, tags, created_at, updated_at, last_accessed_at)
-         VALUES (?, ?, ?, ?, '[]', ?, ?, ?)`,
-        ['new1', 'new-key', 'Brand new content for testing', 'patterns', now, now, now]
-      );
+         VALUES (?, ?, ?, ?, '[]', ?, ?, ?)`
+      ).run('new1', 'new-key', 'Brand new content for testing', 'patterns', now, now, now);
 
       // Should find without manual rebuildFtsIndex due to trigger
       const results = await engine.searchCompact('Brand new content', { includeSemantic: false });
@@ -310,17 +251,16 @@ describe('HybridSearchEngine', () => {
   });
 
   describe('LIKE fallback', () => {
-    it('should work when FTS5 is not available', async () => {
+    it('should work when engine not initialized', async () => {
       // Create engine with fallback forced (by using db without FTS5 init)
       const fallbackEngine = new HybridSearchEngine(db, { fallbackToLike: true });
       // Don't initialize - simulates no FTS5
 
       const now = Date.now();
-      db.run(
+      db.prepare(
         `INSERT INTO memory_entries (id, key, content, namespace, tags, created_at, updated_at, last_accessed_at)
-         VALUES (?, ?, ?, ?, '[]', ?, ?, ?)`,
-        ['fallback1', 'test', 'Fallback test content', 'default', now, now, now]
-      );
+         VALUES (?, ?, ?, ?, '[]', ?, ?, ?)`
+      ).run('fallback1', 'test', 'Fallback test content', 'default', now, now, now);
 
       // This will use LIKE fallback since engine not initialized
       const results = await fallbackEngine.searchCompact('Fallback', { includeSemantic: false });
@@ -338,12 +278,12 @@ describe('HybridSearchEngine', () => {
         { id: 'e4', key: 'step4', content: 'Fourth step content', created_at: baseTime },
       ];
 
+      const stmt = db.prepare(
+        `INSERT INTO memory_entries (id, key, content, namespace, tags, created_at, updated_at, last_accessed_at)
+         VALUES (?, ?, ?, 'default', '[]', ?, ?, ?)`
+      );
       for (const entry of entries) {
-        db.run(
-          `INSERT INTO memory_entries (id, key, content, namespace, tags, created_at, updated_at, last_accessed_at)
-           VALUES (?, ?, ?, 'default', '[]', ?, ?, ?)`,
-          [entry.id, entry.key, entry.content, entry.created_at, entry.created_at, entry.created_at]
-        );
+        stmt.run(entry.id, entry.key, entry.content, entry.created_at, entry.created_at, entry.created_at);
       }
       await engine.rebuildFtsIndex();
     });
@@ -405,11 +345,10 @@ describe('HybridSearchEngine', () => {
   describe('hybrid search with economics', () => {
     beforeEach(async () => {
       const now = Date.now();
-      db.run(
+      db.prepare(
         `INSERT INTO memory_entries (id, key, content, namespace, tags, created_at, updated_at, last_accessed_at)
-         VALUES (?, ?, ?, ?, '[]', ?, ?, ?)`,
-        ['test1', 'test-key', 'Test content for hybrid search with some longer text to measure tokens', 'default', now, now, now]
-      );
+         VALUES (?, ?, ?, ?, '[]', ?, ?, ?)`
+      ).run('test1', 'test-key', 'Test content for hybrid search with some longer text to measure tokens', 'default', now, now, now);
       await engine.rebuildFtsIndex();
     });
 
@@ -441,12 +380,12 @@ describe('HybridSearchEngine', () => {
 
     it('should respect limit option', async () => {
       const now = Date.now();
+      const stmt = db.prepare(
+        `INSERT INTO memory_entries (id, key, content, namespace, tags, created_at, updated_at, last_accessed_at)
+         VALUES (?, ?, ?, ?, '[]', ?, ?, ?)`
+      );
       for (let i = 0; i < 5; i++) {
-        db.run(
-          `INSERT INTO memory_entries (id, key, content, namespace, tags, created_at, updated_at, last_accessed_at)
-           VALUES (?, ?, ?, ?, '[]', ?, ?, ?)`,
-          [`test${i + 2}`, `key${i}`, `Test content number ${i}`, 'default', now, now, now]
-        );
+        stmt.run(`test${i + 2}`, `key${i}`, `Test content number ${i}`, 'default', now, now, now);
       }
       await engine.rebuildFtsIndex();
 
@@ -510,11 +449,10 @@ describe('HybridSearchEngine', () => {
     it('should handle very long content', async () => {
       const now = Date.now();
       const longContent = 'test '.repeat(1000); // 5000 chars
-      db.run(
+      db.prepare(
         `INSERT INTO memory_entries (id, key, content, namespace, tags, created_at, updated_at, last_accessed_at)
-         VALUES (?, ?, ?, ?, '[]', ?, ?, ?)`,
-        ['long1', 'long-key', longContent, 'default', now, now, now]
-      );
+         VALUES (?, ?, ?, ?, '[]', ?, ?, ?)`
+      ).run('long1', 'long-key', longContent, 'default', now, now, now);
       await engine.rebuildFtsIndex();
 
       const results = await engine.searchCompact('test', { includeSemantic: false });

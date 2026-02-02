@@ -46,7 +46,7 @@
 | Feature | Benefit |
 |---------|---------|
 | **100% Local** | All data stays on your machine. No cloud, no API keys, no accounts |
-| **Blazing Fast** | SQLite + WASM = instant queries, zero latency |
+| **Blazing Fast** | Native SQLite (better-sqlite3) = instant queries, zero latency |
 | **Zero Config** | Works out of the box. No database setup required |
 | **Cross-Platform** | Windows, macOS, Linux - same code, same speed |
 | **MCP Server** | `memory_save`, `memory_search`, `memory_recall`, `memory_list`, `memory_status` |
@@ -256,9 +256,9 @@ const results = await memory.query({
 
 ### How It Works
 
-- **Auto-detection**: Uses `better-sqlite3` if installed (native, fast, CJK support)
-- **Fallback**: Falls back to `sql.js` if better-sqlite3 unavailable
-- **Trigram tokenizer**: Creates 3-character sequences for CJK matching
+- **Native SQLite**: Uses `better-sqlite3` for maximum performance
+- **Trigram tokenizer**: FTS5 with trigram creates 3-character sequences for CJK matching
+- **Smart fallback**: Short CJK queries (< 3 chars) automatically use LIKE search
 - **BM25 ranking**: Relevance scoring for search results
 
 ### Advanced: Japanese Word Segmentation

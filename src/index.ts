@@ -62,14 +62,13 @@ import {
   DEFAULT_NAMESPACES,
   NAMESPACE_TYPE_MAP,
 } from './types.js';
-import { SqlJsBackend, SqlJsBackendConfig } from './sqljs-backend.js';
+import { BetterSqlite3Backend } from './better-sqlite3-backend.js';
 import { CacheManager } from './cache-manager.js';
 import { HNSWIndex } from './hnsw-index.js';
 import { MemoryMigrator, migrateMarkdownMemory } from './migration.js';
 
 // Re-export types
 export * from './types.js';
-export { SqlJsBackend } from './sqljs-backend.js';
 export { CacheManager, TieredCacheManager } from './cache-manager.js';
 export { HNSWIndex } from './hnsw-index.js';
 export { MemoryMigrator, migrateMarkdownMemory } from './migration.js';
@@ -95,42 +94,15 @@ export {
 } from './better-sqlite3-backend.js';
 
 /**
- * Check if better-sqlite3 is available
+ * Create a better-sqlite3 backend with FTS5 trigram tokenizer for CJK support
  */
-let _betterSqlite3Available: boolean | null = null;
-async function isBetterSqlite3Available(): Promise<boolean> {
-  if (_betterSqlite3Available !== null) return _betterSqlite3Available;
-  try {
-    await import('better-sqlite3');
-    _betterSqlite3Available = true;
-  } catch {
-    _betterSqlite3Available = false;
-  }
-  return _betterSqlite3Available;
-}
-
-/**
- * Create the best available backend automatically
- * - Uses better-sqlite3 if installed (faster, full CJK support)
- * - Falls back to sql.js (WASM, works everywhere)
- */
-export async function createAutoBackend(
+export function createAutoBackend(
   databasePath: string,
   options: { verbose?: boolean } = {}
-): Promise<IMemoryBackend> {
-  if (await isBetterSqlite3Available()) {
-    const { BetterSqlite3Backend } = await import('./better-sqlite3-backend.js');
-    const backend = new BetterSqlite3Backend({
-      databasePath,
-      ftsTokenizer: 'trigram', // Full CJK support
-      verbose: options.verbose,
-    });
-    return backend;
-  }
-
-  // Fallback to sql.js
-  return new SqlJsBackend({
+): IMemoryBackend {
+  return new BetterSqlite3Backend({
     databasePath,
+    ftsTokenizer: 'trigram', // Full CJK support
     verbose: options.verbose,
   });
 }
@@ -250,9 +222,9 @@ export class ProjectMemoryService extends EventEmitter implements IMemoryBackend
   async initialize(): Promise<void> {
     if (this.initialized) return;
 
-    // Create backend using auto-detection (better-sqlite3 if available, else sql.js)
+    // Create backend with better-sqlite3 (FTS5 trigram tokenizer for CJK support)
     const dbPath = path.join(this.config.baseDir, this.config.dbFilename);
-    this.backend = await createAutoBackend(dbPath, { verbose: this.config.verbose });
+    this.backend = createAutoBackend(dbPath, { verbose: this.config.verbose });
 
     // Forward backend events (if backend is an EventEmitter)
     const backendAsEmitter = this.backend as unknown as EventEmitter | undefined;

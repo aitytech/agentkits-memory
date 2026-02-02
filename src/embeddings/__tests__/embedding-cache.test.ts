@@ -1,17 +1,17 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import initSqlJs, { Database } from 'sql.js';
+import Database from 'better-sqlite3';
+import type { Database as BetterDatabase } from 'better-sqlite3';
 import {
   PersistentEmbeddingCache,
   createPersistentEmbeddingCache,
 } from '../embedding-cache.js';
 
 describe('PersistentEmbeddingCache', () => {
-  let db: Database;
+  let db: BetterDatabase;
   let cache: PersistentEmbeddingCache;
 
-  beforeEach(async () => {
-    const SQL = await initSqlJs();
-    db = new SQL.Database();
+  beforeEach(() => {
+    db = new Database(':memory:');
     cache = new PersistentEmbeddingCache(db);
   });
 

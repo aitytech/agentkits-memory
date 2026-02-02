@@ -17,7 +17,7 @@
  * @module @aitytech/agentkits-memory/search
  */
 
-import type { Database as SqlJsDatabase } from 'sql.js';
+import type { Database as BetterDatabase } from 'better-sqlite3';
 import type { MemoryEntry, SearchResult, EmbeddingGenerator } from '../types.js';
 
 /**
@@ -175,7 +175,7 @@ function estimateTokens(text: string): number {
  * Supports CJK languages (Japanese, Chinese, Korean) via trigram tokenizer.
  */
 export class HybridSearchEngine {
-  private db: SqlJsDatabase;
+  private db: BetterDatabase;
   private config: HybridSearchConfig;
   private embeddingGenerator?: EmbeddingGenerator;
   private ftsInitialized = false;
@@ -184,7 +184,7 @@ export class HybridSearchEngine {
   private activeTokenizer: 'trigram' | 'unicode61' | 'porter' | null = null;
 
   constructor(
-    db: SqlJsDatabase,
+    db: BetterDatabase,
     config: Partial<HybridSearchConfig> = {},
     embeddingGenerator?: EmbeddingGenerator
   ) {
@@ -199,8 +199,8 @@ export class HybridSearchEngine {
   private checkFts5Available(): boolean {
     try {
       // Try to create a minimal FTS5 table
-      this.db.run(`CREATE VIRTUAL TABLE IF NOT EXISTS _fts5_check USING fts5(test)`);
-      this.db.run(`DROP TABLE IF EXISTS _fts5_check`);
+      this.db.exec(`CREATE VIRTUAL TABLE IF NOT EXISTS _fts5_check USING fts5(test)`);
+      this.db.exec(`DROP TABLE IF EXISTS _fts5_check`);
       return true;
     } catch {
       return false;
@@ -212,8 +212,8 @@ export class HybridSearchEngine {
    */
   private checkTokenizerAvailable(tokenizer: string): boolean {
     try {
-      this.db.run(`CREATE VIRTUAL TABLE IF NOT EXISTS _tokenizer_check USING fts5(test, ${tokenizer})`);
-      this.db.run(`DROP TABLE IF EXISTS _tokenizer_check`);
+      this.db.exec(`CREATE VIRTUAL TABLE IF NOT EXISTS _tokenizer_check USING fts5(test, ${tokenizer})`);
+      this.db.exec(`DROP TABLE IF EXISTS _tokenizer_check`);
       return true;
     } catch {
       return false;
@@ -242,8 +242,7 @@ export class HybridSearchEngine {
 
   /**
    * Initialize FTS5 virtual table
-   * Note: For best CJK support, install a SQLite build with trigram tokenizer.
-   * Without trigram, CJK search falls back to LIKE which still works.
+   * Note: For best CJK support, use better-sqlite3 which includes trigram tokenizer.
    */
   async initialize(): Promise<void> {
     if (this.ftsInitialized) return;
@@ -254,7 +253,6 @@ export class HybridSearchEngine {
     if (!this.ftsAvailable) {
       console.warn(
         '[HybridSearch] FTS5 not available in this SQLite build. ' +
-        'Install sql.js-fts5 for full-text search. ' +
         'Falling back to LIKE search.'
       );
       this.ftsInitialized = true;
@@ -268,7 +266,7 @@ export class HybridSearchEngine {
       // Create FTS5 virtual table for full-text search
       // Uses content= to sync with main table
       // trigram tokenizer provides substring matching for CJK languages
-      this.db.run(`
+      this.db.exec(`
         CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(
           key,
           content,
@@ -281,21 +279,21 @@ export class HybridSearchEngine {
       `);
 
       // Create triggers to keep FTS in sync with main table
-      this.db.run(`
+      this.db.exec(`
         CREATE TRIGGER IF NOT EXISTS memory_fts_insert AFTER INSERT ON memory_entries BEGIN
           INSERT INTO memory_fts(rowid, key, content, namespace, tags)
           VALUES (NEW.rowid, NEW.key, NEW.content, NEW.namespace, NEW.tags);
         END
       `);
 
-      this.db.run(`
+      this.db.exec(`
         CREATE TRIGGER IF NOT EXISTS memory_fts_delete AFTER DELETE ON memory_entries BEGIN
           INSERT INTO memory_fts(memory_fts, rowid, key, content, namespace, tags)
           VALUES ('delete', OLD.rowid, OLD.key, OLD.content, OLD.namespace, OLD.tags);
         END
       `);
 
-      this.db.run(`
+      this.db.exec(`
         CREATE TRIGGER IF NOT EXISTS memory_fts_update AFTER UPDATE ON memory_entries BEGIN
           INSERT INTO memory_fts(memory_fts, rowid, key, content, namespace, tags)
           VALUES ('delete', OLD.rowid, OLD.key, OLD.content, OLD.namespace, OLD.tags);
@@ -339,19 +337,15 @@ export class HybridSearchEngine {
 
   /**
    * Rebuild FTS index from existing memory entries
+   * Uses the FTS5 'rebuild' command for content-synced tables
    */
   async rebuildFtsIndex(): Promise<void> {
     if (!this.ftsAvailable) return;
 
     try {
-      // Clear existing FTS data
-      this.db.run(`DELETE FROM memory_fts`);
-
-      // Repopulate from main table
-      this.db.run(`
-        INSERT INTO memory_fts(rowid, key, content, namespace, tags)
-        SELECT rowid, key, content, namespace, tags FROM memory_entries
-      `);
+      // For content-synced FTS5 tables (using content=memory_entries),
+      // use the 'rebuild' command which re-reads from the content table
+      this.db.exec(`INSERT INTO memory_fts(memory_fts) VALUES('rebuild')`);
     } catch (error) {
       console.warn('[HybridSearch] Failed to rebuild FTS index:', error);
     }
@@ -422,25 +416,18 @@ export class HybridSearchEngine {
 
     for (const id of entryIds) {
       // Get the target entry
-      const targetStmt = this.db.prepare(`
+      const targetRow = this.db.prepare(`
         SELECT id, key, namespace, content, created_at
         FROM memory_entries WHERE id = ?
-      `);
-      targetStmt.bind([id]);
-
-      if (!targetStmt.step()) {
-        targetStmt.free();
-        continue;
-      }
-
-      const targetRow = targetStmt.getAsObject() as {
+      `).get(id) as {
         id: string;
         key: string;
         namespace: string;
         content: string;
         created_at: number;
-      };
-      targetStmt.free();
+      } | undefined;
+
+      if (!targetRow) continue;
 
       const targetCompact: CompactSearchResult = {
         id: targetRow.id,
@@ -454,56 +441,44 @@ export class HybridSearchEngine {
       };
 
       // Get entries before
-      const beforeStmt = this.db.prepare(`
+      const beforeRows = this.db.prepare(`
         SELECT id, key, namespace, content, created_at
         FROM memory_entries
         WHERE namespace = ? AND created_at < ?
         ORDER BY created_at DESC
         LIMIT ?
-      `);
-      beforeStmt.bind([targetRow.namespace, targetRow.created_at, contextWindow]);
+      `).all(targetRow.namespace, targetRow.created_at, contextWindow) as typeof targetRow[];
 
-      const before: CompactSearchResult[] = [];
-      while (beforeStmt.step()) {
-        const row = beforeStmt.getAsObject() as typeof targetRow;
-        before.push({
-          id: row.id,
-          key: row.key,
-          namespace: row.namespace,
-          score: 0.5,
-          keywordScore: 0,
-          semanticScore: 0,
-          snippet: row.content.substring(0, 100),
-          estimatedTokens: estimateTokens(row.content),
-        });
-      }
-      beforeStmt.free();
+      const before: CompactSearchResult[] = beforeRows.map(row => ({
+        id: row.id,
+        key: row.key,
+        namespace: row.namespace,
+        score: 0.5,
+        keywordScore: 0,
+        semanticScore: 0,
+        snippet: row.content.substring(0, 100),
+        estimatedTokens: estimateTokens(row.content),
+      }));
 
       // Get entries after
-      const afterStmt = this.db.prepare(`
+      const afterRows = this.db.prepare(`
         SELECT id, key, namespace, content, created_at
         FROM memory_entries
         WHERE namespace = ? AND created_at > ?
         ORDER BY created_at ASC
         LIMIT ?
-      `);
-      afterStmt.bind([targetRow.namespace, targetRow.created_at, contextWindow]);
+      `).all(targetRow.namespace, targetRow.created_at, contextWindow) as typeof targetRow[];
 
-      const after: CompactSearchResult[] = [];
-      while (afterStmt.step()) {
-        const row = afterStmt.getAsObject() as typeof targetRow;
-        after.push({
-          id: row.id,
-          key: row.key,
-          namespace: row.namespace,
-          score: 0.5,
-          keywordScore: 0,
-          semanticScore: 0,
-          snippet: row.content.substring(0, 100),
-          estimatedTokens: estimateTokens(row.content),
-        });
-      }
-      afterStmt.free();
+      const after: CompactSearchResult[] = afterRows.map(row => ({
+        id: row.id,
+        key: row.key,
+        namespace: row.namespace,
+        score: 0.5,
+        keywordScore: 0,
+        semanticScore: 0,
+        snippet: row.content.substring(0, 100),
+        estimatedTokens: estimateTokens(row.content),
+      }));
 
       const totalTokens =
         targetCompact.estimatedTokens +
@@ -531,17 +506,11 @@ export class HybridSearchEngine {
     if (ids.length === 0) return [];
 
     const placeholders = ids.map(() => '?').join(', ');
-    const stmt = this.db.prepare(`
+    const rows = this.db.prepare(`
       SELECT * FROM memory_entries WHERE id IN (${placeholders})
-    `);
-    stmt.bind(ids);
+    `).all(...ids) as Record<string, unknown>[];
 
-    const entries: MemoryEntry[] = [];
-    while (stmt.step()) {
-      const row = stmt.getAsObject() as Record<string, unknown>;
-      entries.push(this.rowToEntry(row));
-    }
-    stmt.free();
+    const entries = rows.map(row => this.rowToEntry(row));
 
     // Sort by original order
     const orderMap = new Map(ids.map((id, i) => [id, i]));
@@ -663,16 +632,30 @@ export class HybridSearchEngine {
       return this.likeSearch(query, limit, namespace);
     }
 
+    // Trigram tokenizer requires at least 3 characters to match
+    // For short CJK queries (< 3 chars), fall back to LIKE search
+    if (this.activeTokenizer === 'trigram' && this.containsCJK(query)) {
+      const cjkChars = query.match(/[\u4E00-\u9FFF\u3040-\u309F\u30A0-\u30FF\uAC00-\uD7AF\u3400-\u4DBF]/g);
+      if (cjkChars && cjkChars.length < 3) {
+        return this.likeSearch(query, limit, namespace);
+      }
+    }
+
     // Sanitize query for FTS5
     const sanitizedQuery = this.sanitizeFtsQuery(query);
     if (!sanitizedQuery) return [];
 
-    let sql: string;
-    const params: (string | number)[] = [];
-
     try {
+      let rows: {
+        id: string;
+        key: string;
+        namespace: string;
+        content: string;
+        rank: number;
+      }[];
+
       if (namespace) {
-        sql = `
+        rows = this.db.prepare(`
           SELECT
             m.id, m.key, m.namespace, m.content,
             bm25(memory_fts) as rank
@@ -681,10 +664,9 @@ export class HybridSearchEngine {
           WHERE memory_fts MATCH ? AND m.namespace = ?
           ORDER BY rank
           LIMIT ?
-        `;
-        params.push(sanitizedQuery, namespace, limit);
+        `).all(sanitizedQuery, namespace, limit) as typeof rows;
       } else {
-        sql = `
+        rows = this.db.prepare(`
           SELECT
             m.id, m.key, m.namespace, m.content,
             bm25(memory_fts) as rank
@@ -693,28 +675,15 @@ export class HybridSearchEngine {
           WHERE memory_fts MATCH ?
           ORDER BY rank
           LIMIT ?
-        `;
-        params.push(sanitizedQuery, limit);
+        `).all(sanitizedQuery, limit) as typeof rows;
       }
 
-      const stmt = this.db.prepare(sql);
-      stmt.bind(params);
-
-      const results: CompactSearchResult[] = [];
-      while (stmt.step()) {
-        const row = stmt.getAsObject() as {
-          id: string;
-          key: string;
-          namespace: string;
-          content: string;
-          rank: number;
-        };
-
+      return rows.map(row => {
         // Normalize BM25 score (negative, closer to 0 is better)
         // Convert to 0-1 scale where 1 is best
         const keywordScore = Math.min(1, Math.max(0, 1 + row.rank / 10));
 
-        results.push({
+        return {
           id: row.id,
           key: row.key,
           namespace: row.namespace,
@@ -723,11 +692,8 @@ export class HybridSearchEngine {
           semanticScore: 0,
           snippet: row.content.substring(0, 100),
           estimatedTokens: estimateTokens(row.content),
-        });
-      }
-      stmt.free();
-
-      return results;
+        };
+      });
     } catch (error) {
       // Fall back to LIKE search on error
       if (this.config.fallbackToLike) {
@@ -752,49 +718,40 @@ export class HybridSearchEngine {
     if (!trimmedQuery) return [];
 
     const searchPattern = `%${trimmedQuery}%`;
-    let sql: string;
-    const params: (string | number)[] = [];
+    let rows: {
+      id: string;
+      key: string;
+      namespace: string;
+      content: string;
+    }[];
 
     if (namespace) {
-      sql = `
+      rows = this.db.prepare(`
         SELECT id, key, namespace, content
         FROM memory_entries
         WHERE (content LIKE ? OR key LIKE ? OR tags LIKE ?)
           AND namespace = ?
         ORDER BY created_at DESC
         LIMIT ?
-      `;
-      params.push(searchPattern, searchPattern, searchPattern, namespace, limit);
+      `).all(searchPattern, searchPattern, searchPattern, namespace, limit) as typeof rows;
     } else {
-      sql = `
+      rows = this.db.prepare(`
         SELECT id, key, namespace, content
         FROM memory_entries
         WHERE content LIKE ? OR key LIKE ? OR tags LIKE ?
         ORDER BY created_at DESC
         LIMIT ?
-      `;
-      params.push(searchPattern, searchPattern, searchPattern, limit);
+      `).all(searchPattern, searchPattern, searchPattern, limit) as typeof rows;
     }
 
-    const stmt = this.db.prepare(sql);
-    stmt.bind(params);
-
-    const results: CompactSearchResult[] = [];
-    while (stmt.step()) {
-      const row = stmt.getAsObject() as {
-        id: string;
-        key: string;
-        namespace: string;
-        content: string;
-      };
-
+    return rows.map(row => {
       // Simple scoring based on match position
       const lowerContent = row.content.toLowerCase();
       const lowerQuery = query.toLowerCase();
       const matchIndex = lowerContent.indexOf(lowerQuery);
       const keywordScore = matchIndex >= 0 ? Math.max(0.3, 1 - matchIndex / 1000) : 0.5;
 
-      results.push({
+      return {
         id: row.id,
         key: row.key,
         namespace: row.namespace,
@@ -803,11 +760,8 @@ export class HybridSearchEngine {
         semanticScore: 0,
         snippet: row.content.substring(0, 100),
         estimatedTokens: estimateTokens(row.content),
-      });
-    }
-    stmt.free();
-
-    return results;
+      };
+    });
   }
 
   /**
@@ -824,21 +778,26 @@ export class HybridSearchEngine {
     const queryEmbedding = await this.embeddingGenerator(query);
 
     // Get all entries with embeddings
-    let sql = `
-      SELECT id, key, namespace, content, embedding
-      FROM memory_entries
-      WHERE embedding IS NOT NULL
-    `;
-    const params: string[] = [];
+    let rows: {
+      id: string;
+      key: string;
+      namespace: string;
+      content: string;
+      embedding: Buffer;
+    }[];
 
     if (namespace) {
-      sql += ` AND namespace = ?`;
-      params.push(namespace);
-    }
-
-    const stmt = this.db.prepare(sql);
-    if (params.length > 0) {
-      stmt.bind(params);
+      rows = this.db.prepare(`
+        SELECT id, key, namespace, content, embedding
+        FROM memory_entries
+        WHERE embedding IS NOT NULL AND namespace = ?
+      `).all(namespace) as typeof rows;
+    } else {
+      rows = this.db.prepare(`
+        SELECT id, key, namespace, content, embedding
+        FROM memory_entries
+        WHERE embedding IS NOT NULL
+      `).all() as typeof rows;
     }
 
     const candidates: Array<{
@@ -849,22 +808,12 @@ export class HybridSearchEngine {
       similarity: number;
     }> = [];
 
-    while (stmt.step()) {
-      const row = stmt.getAsObject() as {
-        id: string;
-        key: string;
-        namespace: string;
-        content: string;
-        embedding: Uint8Array;
-      };
-
+    for (const row of rows) {
       if (row.embedding) {
-        const embedding = new Float32Array(
-          row.embedding.buffer.slice(
-            row.embedding.byteOffset,
-            row.embedding.byteOffset + row.embedding.byteLength
-          )
-        );
+        const embedding = new Float32Array(row.embedding.buffer.slice(
+          row.embedding.byteOffset,
+          row.embedding.byteOffset + row.embedding.byteLength
+        ));
         const similarity = this.cosineSimilarity(queryEmbedding, embedding);
 
         candidates.push({
@@ -876,7 +825,6 @@ export class HybridSearchEngine {
         });
       }
     }
-    stmt.free();
 
     // Sort by similarity and take top results
     candidates.sort((a, b) => b.similarity - a.similarity);
@@ -925,11 +873,29 @@ export class HybridSearchEngine {
 
   /**
    * Sanitize query for FTS5
+   * Preserves CJK characters (Japanese, Chinese, Korean) and basic alphanumerics
    */
   private sanitizeFtsQuery(query: string): string {
-    // Remove special FTS5 characters and wrap terms
-    return query
-      .replace(/[^\w\s]/g, ' ')
+    // For trigram tokenizer, preserve CJK characters
+    // Remove only FTS5 special operators: AND, OR, NOT, *, ^, :, ", (, )
+    // Keep Unicode letters, digits, and spaces
+    const sanitized = query
+      // Remove FTS5 special characters and operators, but preserve Unicode letters
+      .replace(/[*^:"()]/g, ' ')
+      .replace(/\bAND\b|\bOR\b|\bNOT\b|\bNEAR\b/gi, ' ')
+      .trim();
+
+    if (!sanitized) return '';
+
+    // For trigram tokenizer with CJK, we can pass the text directly
+    // The trigram tokenizer handles the text as-is
+    if (this.activeTokenizer === 'trigram') {
+      // With trigram, wrap the entire query in quotes for phrase matching
+      return `"${sanitized}"`;
+    }
+
+    // For other tokenizers, split into terms and wrap each
+    return sanitized
       .split(/\s+/)
       .filter((term) => term.length > 0)
       .map((term) => `"${term}"`)
@@ -942,7 +908,7 @@ export class HybridSearchEngine {
   private rowToEntry(row: Record<string, unknown>): MemoryEntry {
     let embedding: Float32Array | undefined;
     if (row.embedding) {
-      const embeddingData = row.embedding as Uint8Array;
+      const embeddingData = row.embedding as Buffer;
       embedding = new Float32Array(
         embeddingData.buffer.slice(
           embeddingData.byteOffset,
@@ -992,7 +958,7 @@ export class HybridSearchEngine {
  * Create a hybrid search engine
  */
 export function createHybridSearchEngine(
-  db: SqlJsDatabase,
+  db: BetterDatabase,
   config?: Partial<HybridSearchConfig>,
   embeddingGenerator?: EmbeddingGenerator
 ): HybridSearchEngine {

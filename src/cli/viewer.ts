@@ -20,8 +20,8 @@
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { createRequire } from 'node:module';
-import initSqlJs, { Database as SqlJsDatabase } from 'sql.js';
+import Database from 'better-sqlite3';
+import type { Database as BetterDatabase } from 'better-sqlite3';
 
 const args = process.argv.slice(2);
 const projectDir = process.env.CLAUDE_PROJECT_DIR || process.cwd();
@@ -37,54 +37,45 @@ function parseArgs(): Record<string, string | boolean> {
   return parsed;
 }
 
-async function loadDatabase(): Promise<SqlJsDatabase> {
-  const require = createRequire(import.meta.url);
-  const sqlJsPath = require.resolve('sql.js');
-
-  const SQL = await initSqlJs({
-    locateFile: (file: string) => path.join(path.dirname(sqlJsPath), file),
-  });
-
+function loadDatabase(): BetterDatabase | null {
   const dbPath = path.join(projectDir, '.claude/memory/memory.db');
 
   if (fs.existsSync(dbPath)) {
-    const buffer = fs.readFileSync(dbPath);
-    return new SQL.Database(new Uint8Array(buffer));
+    return new Database(dbPath);
   } else {
     console.log(`\n📭 No database found at: ${dbPath}\n`);
     console.log('Run Claude Code with memory MCP server to create entries.');
-    process.exit(0);
+    return null;
   }
 }
 
-async function main() {
+function main() {
   const options = parseArgs();
   const limit = parseInt(options.limit as string, 10) || 20;
   const namespace = options.namespace as string | undefined;
   const asJson = !!options.json;
 
   try {
-    const db = await loadDatabase();
+    const db = loadDatabase();
+    if (!db) {
+      process.exit(0);
+    }
 
     if (options.stats) {
       // Get stats
-      const totalResult = db.exec('SELECT COUNT(*) as count FROM memory_entries');
-      const total = totalResult[0]?.values[0]?.[0] || 0;
+      const totalRow = db.prepare('SELECT COUNT(*) as count FROM memory_entries').get() as { count: number };
+      const total = totalRow?.count || 0;
 
-      const nsResult = db.exec('SELECT namespace, COUNT(*) FROM memory_entries GROUP BY namespace');
+      const nsRows = db.prepare('SELECT namespace, COUNT(*) as count FROM memory_entries GROUP BY namespace').all() as { namespace: string; count: number }[];
       const byNamespace: Record<string, number> = {};
-      if (nsResult[0]) {
-        for (const row of nsResult[0].values) {
-          byNamespace[row[0] as string] = row[1] as number;
-        }
+      for (const row of nsRows) {
+        byNamespace[row.namespace] = row.count;
       }
 
-      const typeResult = db.exec('SELECT type, COUNT(*) FROM memory_entries GROUP BY type');
+      const typeRows = db.prepare('SELECT type, COUNT(*) as count FROM memory_entries GROUP BY type').all() as { type: string; count: number }[];
       const byType: Record<string, number> = {};
-      if (typeResult[0]) {
-        for (const row of typeResult[0].values) {
-          byType[row[0] as string] = row[1] as number;
-        }
+      for (const row of typeRows) {
+        byType[row.type] = row.count;
       }
 
       if (asJson) {
@@ -107,32 +98,23 @@ async function main() {
     }
 
     if (options.export) {
-      const result = db.exec('SELECT * FROM memory_entries');
-      if (!result[0]) {
+      const rows = db.prepare('SELECT * FROM memory_entries').all() as Record<string, unknown>[];
+      if (rows.length === 0) {
         console.log('No entries to export.');
         db.close();
         return;
       }
 
-      const columns = result[0].columns;
-      const entries = result[0].values.map(row => {
-        const entry: Record<string, unknown> = {};
-        columns.forEach((col, i) => {
-          entry[col] = row[i];
-        });
-        return entry;
-      });
-
       const filename = `memory-export-${Date.now()}.json`;
-      fs.writeFileSync(filename, JSON.stringify({ entries, exportedAt: new Date().toISOString() }, null, 2));
-      console.log(`✓ Exported ${entries.length} entries to ${filename}`);
+      fs.writeFileSync(filename, JSON.stringify({ entries: rows, exportedAt: new Date().toISOString() }, null, 2));
+      console.log(`✓ Exported ${rows.length} entries to ${filename}`);
       db.close();
       return;
     }
 
     // Default: list entries
     let query = 'SELECT id, key, content, type, namespace, tags, created_at FROM memory_entries';
-    const params: string[] = [];
+    const params: (string | number)[] = [];
 
     if (namespace) {
       query += ' WHERE namespace = ?';
@@ -140,12 +122,9 @@ async function main() {
     }
 
     query += ' ORDER BY created_at DESC LIMIT ?';
-    params.push(String(limit));
+    params.push(limit);
 
-    const stmt = db.prepare(query);
-    stmt.bind(params);
-
-    const entries: Array<{
+    const entries = db.prepare(query).all(...params) as {
       id: string;
       key: string;
       content: string;
@@ -153,21 +132,7 @@ async function main() {
       namespace: string;
       tags: string;
       created_at: number;
-    }> = [];
-
-    while (stmt.step()) {
-      const row = stmt.getAsObject();
-      entries.push({
-        id: row.id as string,
-        key: row.key as string,
-        content: row.content as string,
-        type: row.type as string,
-        namespace: row.namespace as string,
-        tags: row.tags as string,
-        created_at: row.created_at as number,
-      });
-    }
-    stmt.free();
+    }[];
 
     if (entries.length === 0) {
       console.log('\n📭 No memories found in database.\n');
@@ -201,8 +166,8 @@ async function main() {
     }
 
     // Get total count
-    const countResult = db.exec('SELECT COUNT(*) FROM memory_entries');
-    const totalCount = countResult[0]?.values[0]?.[0] || entries.length;
+    const countRow = db.prepare('SELECT COUNT(*) as count FROM memory_entries').get() as { count: number };
+    const totalCount = countRow?.count || entries.length;
 
     console.log(`\nShowing ${entries.length} of ${totalCount} total entries`);
     console.log('Use --limit=N to see more, --namespace=X to filter\n');

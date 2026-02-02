@@ -461,10 +461,10 @@ export class MemoryMigrator extends EventEmitter {
    * Load entries from existing SQLite database
    */
   private async loadFromSQLite(): Promise<MemoryEntry[]> {
-    // Would need sql.js to read existing database
-    // For now, return empty and log warning
+    // SQLite migration should use the main ProjectMemoryService which now uses better-sqlite3
+    // For standalone migration, use JSON export instead
     this.emit('migration:warning', {
-      message: 'SQLite migration requires sql.js to be loaded. Use JSON export instead.',
+      message: 'SQLite migration should use ProjectMemoryService. Use JSON export for standalone migration.',
     });
     return [];
   }

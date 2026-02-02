@@ -43,9 +43,7 @@
     "better-sqlite3": "^11.0.0"
   },
   "optionalDependencies": {
-    "@xenova/transformers": "^2.17.0",
-    "sql.js": "^1.10.3",
-    "sql.js-fts5": "^1.4.0"
+    "@xenova/transformers": "^2.17.0"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.11",
