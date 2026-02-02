@@ -2,18 +2,15 @@
  * Memory Hook Service
  *
  * Lightweight service for hooks to store/retrieve memory.
- * Direct SQLite access without HTTP worker (simpler than claude-mem).
+ * Direct SQLite access without HTTP worker.
  *
  * @module @agentkits/memory/hooks/service
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync } from 'node:fs';
 import * as path from 'node:path';
-import { createRequire } from 'node:module';
-import initSqlJs, { Database as SqlJsDatabase } from 'sql.js';
-
-// ESM-compatible require for resolving sql.js WASM path
-const require = createRequire(import.meta.url);
+import Database from 'better-sqlite3';
+import type { Database as BetterDatabase } from 'better-sqlite3';
 import {
   Observation,
   SessionRecord,
@@ -60,8 +57,7 @@ const DEFAULT_CONFIG: MemoryHookServiceConfig = {
  */
 export class MemoryHookService {
   private config: MemoryHookServiceConfig;
-  private db: SqlJsDatabase | null = null;
-  private SQL: any = null;
+  private db: BetterDatabase | null = null;
   private initialized: boolean = false;
   private dbPath: string;
 
@@ -82,25 +78,11 @@ export class MemoryHookService {
       mkdirSync(dir, { recursive: true });
     }
 
-    // Load sql.js - use local wasm file from node_modules
-    this.SQL = await initSqlJs({
-      locateFile: (file: string) => {
-        // Try to find the wasm file in node_modules
-        const localPath = path.join(
-          path.dirname(require.resolve('sql.js')),
-          file
-        );
-        return localPath;
-      },
-    });
+    // Open database with better-sqlite3
+    this.db = new Database(this.dbPath);
 
-    // Load or create database
-    if (existsSync(this.dbPath)) {
-      const buffer = readFileSync(this.dbPath);
-      this.db = new this.SQL.Database(new Uint8Array(buffer));
-    } else {
-      this.db = new this.SQL.Database();
-    }
+    // Enable WAL mode for better performance
+    this.db.pragma('journal_mode = WAL');
 
     // Create schema
     this.createSchema();
@@ -109,23 +91,11 @@ export class MemoryHookService {
   }
 
   /**
-   * Persist database to disk
-   */
-  async persist(): Promise<void> {
-    if (!this.db) return;
-
-    const data = this.db.export();
-    const buffer = Buffer.from(data);
-    writeFileSync(this.dbPath, buffer);
-  }
-
-  /**
    * Shutdown the service
    */
   async shutdown(): Promise<void> {
     if (!this.initialized || !this.db) return;
 
-    await this.persist();
     this.db.close();
     this.db = null;
     this.initialized = false;
@@ -147,15 +117,13 @@ export class MemoryHookService {
 
     // Create new session
     const now = Date.now();
-    this.db!.run(`
+    const result = this.db!.prepare(`
       INSERT INTO sessions (session_id, project, prompt, started_at, observation_count, status)
       VALUES (?, ?, ?, ?, 0, 'active')
-    `, [sessionId, project, prompt || '', now]);
-
-    await this.persist();
+    `).run(sessionId, project, prompt || '', now);
 
     return {
-      id: this.db!.exec('SELECT last_insert_rowid()')[0]?.values[0]?.[0] as number || 0,
+      id: Number(result.lastInsertRowid),
       sessionId,
       project,
       prompt: prompt || '',
@@ -171,16 +139,12 @@ export class MemoryHookService {
   getSession(sessionId: string): SessionRecord | null {
     if (!this.db) return null;
 
-    const stmt = this.db.prepare('SELECT * FROM sessions WHERE session_id = ?');
-    stmt.bind([sessionId]);
+    const row = this.db.prepare('SELECT * FROM sessions WHERE session_id = ?').get(sessionId) as Record<string, unknown> | undefined;
 
-    if (stmt.step()) {
-      const row = stmt.getAsObject();
-      stmt.free();
+    if (row) {
       return this.rowToSession(row);
     }
 
-    stmt.free();
     return null;
   }
 
@@ -191,13 +155,11 @@ export class MemoryHookService {
     await this.ensureInitialized();
 
     const now = Date.now();
-    this.db!.run(`
+    this.db!.prepare(`
       UPDATE sessions
       SET ended_at = ?, summary = ?, status = 'completed'
       WHERE session_id = ?
-    `, [now, summary || '', sessionId]);
-
-    await this.persist();
+    `).run(now, summary || '', sessionId);
   }
 
   /**
@@ -206,21 +168,14 @@ export class MemoryHookService {
   async getRecentSessions(project: string, limit: number = 5): Promise<SessionRecord[]> {
     await this.ensureInitialized();
 
-    const stmt = this.db!.prepare(`
+    const rows = this.db!.prepare(`
       SELECT * FROM sessions
       WHERE project = ?
       ORDER BY started_at DESC
       LIMIT ?
-    `);
-    stmt.bind([project, limit]);
+    `).all(project, limit) as Record<string, unknown>[];
 
-    const sessions: SessionRecord[] = [];
-    while (stmt.step()) {
-      sessions.push(this.rowToSession(stmt.getAsObject()));
-    }
-    stmt.free();
-
-    return sessions;
+    return rows.map(row => this.rowToSession(row));
   }
 
   // ===== Observation Management =====
@@ -250,19 +205,17 @@ export class MemoryHookService {
       this.config.maxResponseSize
     );
 
-    this.db!.run(`
+    this.db!.prepare(`
       INSERT INTO observations (id, session_id, project, tool_name, tool_input, tool_response, cwd, timestamp, type, title)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `, [id, sessionId, project, toolName, inputStr, responseStr, cwd, now, type, title]);
+    `).run(id, sessionId, project, toolName, inputStr, responseStr, cwd, now, type, title);
 
     // Update session observation count
-    this.db!.run(`
+    this.db!.prepare(`
       UPDATE sessions
       SET observation_count = observation_count + 1
       WHERE session_id = ?
-    `, [sessionId]);
-
-    await this.persist();
+    `).run(sessionId);
 
     return {
       id,
@@ -284,21 +237,14 @@ export class MemoryHookService {
   async getSessionObservations(sessionId: string, limit: number = 50): Promise<Observation[]> {
     await this.ensureInitialized();
 
-    const stmt = this.db!.prepare(`
+    const rows = this.db!.prepare(`
       SELECT * FROM observations
       WHERE session_id = ?
       ORDER BY timestamp DESC
       LIMIT ?
-    `);
-    stmt.bind([sessionId, limit]);
+    `).all(sessionId, limit) as Record<string, unknown>[];
 
-    const observations: Observation[] = [];
-    while (stmt.step()) {
-      observations.push(this.rowToObservation(stmt.getAsObject()));
-    }
-    stmt.free();
-
-    return observations;
+    return rows.map(row => this.rowToObservation(row));
   }
 
   /**
@@ -307,21 +253,14 @@ export class MemoryHookService {
   async getRecentObservations(project: string, limit: number = 20): Promise<Observation[]> {
     await this.ensureInitialized();
 
-    const stmt = this.db!.prepare(`
+    const rows = this.db!.prepare(`
       SELECT * FROM observations
       WHERE project = ?
       ORDER BY timestamp DESC
       LIMIT ?
-    `);
-    stmt.bind([project, limit]);
+    `).all(project, limit) as Record<string, unknown>[];
 
-    const observations: Observation[] = [];
-    while (stmt.step()) {
-      observations.push(this.rowToObservation(stmt.getAsObject()));
-    }
-    stmt.free();
-
-    return observations;
+    return rows.map(row => this.rowToObservation(row));
   }
 
   // ===== Context Generation =====
@@ -480,7 +419,7 @@ export class MemoryHookService {
   private createSchema(): void {
     if (!this.db) return;
 
-    this.db.run(`
+    this.db.exec(`
       CREATE TABLE IF NOT EXISTS sessions (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         session_id TEXT UNIQUE NOT NULL,
@@ -494,7 +433,7 @@ export class MemoryHookService {
       )
     `);
 
-    this.db.run(`
+    this.db.exec(`
       CREATE TABLE IF NOT EXISTS observations (
         id TEXT PRIMARY KEY,
         session_id TEXT NOT NULL,
@@ -510,13 +449,13 @@ export class MemoryHookService {
       )
     `);
 
-    this.db.run('CREATE INDEX IF NOT EXISTS idx_obs_session ON observations(session_id)');
-    this.db.run('CREATE INDEX IF NOT EXISTS idx_obs_project ON observations(project)');
-    this.db.run('CREATE INDEX IF NOT EXISTS idx_obs_timestamp ON observations(timestamp)');
-    this.db.run('CREATE INDEX IF NOT EXISTS idx_sessions_project ON sessions(project)');
+    this.db.exec('CREATE INDEX IF NOT EXISTS idx_obs_session ON observations(session_id)');
+    this.db.exec('CREATE INDEX IF NOT EXISTS idx_obs_project ON observations(project)');
+    this.db.exec('CREATE INDEX IF NOT EXISTS idx_obs_timestamp ON observations(timestamp)');
+    this.db.exec('CREATE INDEX IF NOT EXISTS idx_sessions_project ON sessions(project)');
   }
 
-  private rowToSession(row: any): SessionRecord {
+  private rowToSession(row: Record<string, unknown>): SessionRecord {
     return {
       id: row.id as number,
       sessionId: row.session_id as string,
@@ -530,7 +469,7 @@ export class MemoryHookService {
     };
   }
 
-  private rowToObservation(row: any): Observation {
+  private rowToObservation(row: Record<string, unknown>): Observation {
     return {
       id: row.id as string,
       sessionId: row.session_id as string,
@@ -540,7 +479,7 @@ export class MemoryHookService {
       toolResponse: row.tool_response as string,
       cwd: row.cwd as string,
       timestamp: row.timestamp as number,
-      type: row.type as any,
+      type: row.type as Observation['type'],
       title: row.title as string | undefined,
     };
   }

@@ -42,7 +42,7 @@
  */
 
 import { EventEmitter } from 'node:events';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync } from 'node:fs';
 import * as path from 'node:path';
 import {
   IMemoryBackend,
@@ -56,23 +56,53 @@ import {
   HealthCheckResult,
   EmbeddingGenerator,
   SessionInfo,
-  MigrationResult,
   createDefaultEntry,
   generateSessionId,
   DEFAULT_NAMESPACES,
   NAMESPACE_TYPE_MAP,
 } from './types.js';
-import { SqlJsBackend, SqlJsBackendConfig } from './sqljs-backend.js';
+import { BetterSqlite3Backend } from './better-sqlite3-backend.js';
 import { CacheManager } from './cache-manager.js';
 import { HNSWIndex } from './hnsw-index.js';
-import { MemoryMigrator, migrateMarkdownMemory } from './migration.js';
 
 // Re-export types
 export * from './types.js';
-export { SqlJsBackend } from './sqljs-backend.js';
 export { CacheManager, TieredCacheManager } from './cache-manager.js';
 export { HNSWIndex } from './hnsw-index.js';
-export { MemoryMigrator, migrateMarkdownMemory } from './migration.js';
+export {
+  LocalEmbeddingsService,
+  createLocalEmbeddings,
+  createEmbeddingGenerator,
+  PersistentEmbeddingCache,
+  createPersistentEmbeddingCache,
+} from './embeddings/index.js';
+
+export {
+  HybridSearchEngine,
+  createHybridSearchEngine,
+  TokenEconomicsTracker,
+  createTokenEconomicsTracker,
+} from './search/index.js';
+
+export {
+  BetterSqlite3Backend,
+  createBetterSqlite3Backend,
+  createJapaneseOptimizedBackend,
+} from './better-sqlite3-backend.js';
+
+/**
+ * Create a better-sqlite3 backend with FTS5 trigram tokenizer for CJK support
+ */
+export function createAutoBackend(
+  databasePath: string,
+  options: { verbose?: boolean } = {}
+): IMemoryBackend {
+  return new BetterSqlite3Backend({
+    databasePath,
+    ftsTokenizer: 'trigram', // Full CJK support
+    verbose: options.verbose,
+  });
+}
 
 /**
  * Configuration for ProjectMemoryService
@@ -140,7 +170,7 @@ const DEFAULT_CONFIG: ProjectMemoryConfig = {
  */
 export class ProjectMemoryService extends EventEmitter implements IMemoryBackend {
   private config: ProjectMemoryConfig;
-  private backend: SqlJsBackend;
+  private backend: IMemoryBackend | null = null;
   private cache: CacheManager<MemoryEntry> | null = null;
   private vectorIndex: HNSWIndex | null = null;
   private initialized: boolean = false;
@@ -161,14 +191,7 @@ export class ProjectMemoryService extends EventEmitter implements IMemoryBackend
       mkdirSync(this.config.baseDir, { recursive: true });
     }
 
-    // Initialize backend
-    const dbPath = path.join(this.config.baseDir, this.config.dbFilename);
-    this.backend = new SqlJsBackend({
-      databasePath: dbPath,
-      autoPersistInterval: this.config.autoPersistInterval,
-      maxEntries: this.config.maxEntries,
-      verbose: this.config.verbose,
-    });
+    // Backend is created lazily in initialize() for auto-detection
 
     // Initialize cache if enabled
     if (this.config.cacheEnabled) {
@@ -189,18 +212,25 @@ export class ProjectMemoryService extends EventEmitter implements IMemoryBackend
         metric: 'cosine',
       });
     }
-
-    // Forward backend events
-    this.backend.on('entry:stored', (data) => this.emit('entry:stored', data));
-    this.backend.on('entry:updated', (data) => this.emit('entry:updated', data));
-    this.backend.on('entry:deleted', (data) => this.emit('entry:deleted', data));
-    this.backend.on('persisted', (data) => this.emit('persisted', data));
   }
 
   // ===== Lifecycle =====
 
   async initialize(): Promise<void> {
     if (this.initialized) return;
+
+    // Create backend with better-sqlite3 (FTS5 trigram tokenizer for CJK support)
+    const dbPath = path.join(this.config.baseDir, this.config.dbFilename);
+    this.backend = createAutoBackend(dbPath, { verbose: this.config.verbose });
+
+    // Forward backend events (if backend is an EventEmitter)
+    const backendAsEmitter = this.backend as unknown as EventEmitter | undefined;
+    if (backendAsEmitter && typeof backendAsEmitter.on === 'function') {
+      backendAsEmitter.on('entry:stored', (data) => this.emit('entry:stored', data));
+      backendAsEmitter.on('entry:updated', (data) => this.emit('entry:updated', data));
+      backendAsEmitter.on('entry:deleted', (data) => this.emit('entry:deleted', data));
+      backendAsEmitter.on('persisted', (data) => this.emit('persisted', data));
+    }
 
     await this.backend.initialize();
 
@@ -226,7 +256,9 @@ export class ProjectMemoryService extends EventEmitter implements IMemoryBackend
       this.cache.shutdown();
     }
 
-    await this.backend.shutdown();
+    if (this.backend) {
+      await this.backend.shutdown();
+    }
     this.initialized = false;
     this.emit('shutdown');
   }
@@ -234,7 +266,7 @@ export class ProjectMemoryService extends EventEmitter implements IMemoryBackend
   // ===== IMemoryBackend Implementation =====
 
   async store(entry: MemoryEntry): Promise<void> {
-    this.ensureInitialized();
+    const backend = this.ensureInitialized();
 
     // Generate embedding if enabled and not present
     if (this.config.embeddingGenerator && !entry.embedding) {
@@ -253,7 +285,7 @@ export class ProjectMemoryService extends EventEmitter implements IMemoryBackend
     }
 
     // Store in backend
-    await this.backend.store(entry);
+    await backend.store(entry);
 
     // Update cache
     if (this.cache) {
@@ -268,7 +300,7 @@ export class ProjectMemoryService extends EventEmitter implements IMemoryBackend
   }
 
   async get(id: string): Promise<MemoryEntry | null> {
-    this.ensureInitialized();
+    const backend = this.ensureInitialized();
 
     // Check cache first
     if (this.cache) {
@@ -276,7 +308,7 @@ export class ProjectMemoryService extends EventEmitter implements IMemoryBackend
       if (cached) return cached;
     }
 
-    const entry = await this.backend.get(id);
+    const entry = await backend.get(id);
 
     // Update cache
     if (entry && this.cache) {
@@ -287,7 +319,7 @@ export class ProjectMemoryService extends EventEmitter implements IMemoryBackend
   }
 
   async getByKey(namespace: string, key: string): Promise<MemoryEntry | null> {
-    this.ensureInitialized();
+    const backend = this.ensureInitialized();
 
     const cacheKey = `${namespace}:${key}`;
 
@@ -297,7 +329,7 @@ export class ProjectMemoryService extends EventEmitter implements IMemoryBackend
       if (cached) return cached;
     }
 
-    const entry = await this.backend.getByKey(namespace, key);
+    const entry = await backend.getByKey(namespace, key);
 
     // Update cache
     if (entry && this.cache) {
@@ -309,16 +341,16 @@ export class ProjectMemoryService extends EventEmitter implements IMemoryBackend
   }
 
   async update(id: string, update: MemoryEntryUpdate): Promise<MemoryEntry | null> {
-    this.ensureInitialized();
+    const backend = this.ensureInitialized();
 
-    const updated = await this.backend.update(id, update);
+    const updated = await backend.update(id, update);
 
     if (updated) {
       // Regenerate embedding if content changed
       if (update.content && this.config.embeddingGenerator) {
         try {
           updated.embedding = await this.config.embeddingGenerator(updated.content);
-          await this.backend.store(updated);
+          await backend.store(updated);
 
           // Update vector index
           if (this.vectorIndex && updated.embedding) {
@@ -341,12 +373,12 @@ export class ProjectMemoryService extends EventEmitter implements IMemoryBackend
   }
 
   async delete(id: string): Promise<boolean> {
-    this.ensureInitialized();
+    const backend = this.ensureInitialized();
 
     const entry = await this.get(id);
     if (!entry) return false;
 
-    const result = await this.backend.delete(id);
+    const result = await backend.delete(id);
 
     if (result) {
       // Remove from cache
@@ -365,12 +397,136 @@ export class ProjectMemoryService extends EventEmitter implements IMemoryBackend
   }
 
   async query(query: MemoryQuery): Promise<MemoryEntry[]> {
-    this.ensureInitialized();
-    return this.backend.query(query);
+    const backend = this.ensureInitialized();
+
+    // If no content search term, just use basic query (ordered by date)
+    if (!query.content && !query.embedding) {
+      return backend.query(query);
+    }
+
+    // Handle different search types
+    // 'semantic' = vector only, 'hybrid' = combined, others fall back to FTS
+    const searchType = query.type || 'hybrid';
+    const limit = query.limit || 100;
+
+    // For exact, prefix, tag search - use backend directly
+    if (searchType === 'exact' || searchType === 'prefix' || searchType === 'tag') {
+      return backend.query(query);
+    }
+
+    // For semantic or hybrid search, need embedding
+    let embedding = query.embedding;
+    if (!embedding && query.content && this.config.embeddingGenerator) {
+      try {
+        embedding = await this.config.embeddingGenerator(query.content);
+      } catch (error) {
+        console.warn('[ProjectMemoryService] Failed to generate embedding, falling back to text search');
+        const betterBackend = backend as BetterSqlite3Backend;
+        if (typeof betterBackend.searchFts === 'function') {
+          return betterBackend.searchFts(query.content, {
+            namespace: query.namespace,
+            limit,
+          });
+        }
+        return backend.query(query);
+      }
+    }
+
+    if (!embedding) {
+      // No embedding available, fall back to FTS
+      const betterBackend = backend as BetterSqlite3Backend;
+      if (query.content && typeof betterBackend.searchFts === 'function') {
+        return betterBackend.searchFts(query.content, {
+          namespace: query.namespace,
+          limit,
+        });
+      }
+      return backend.query(query);
+    }
+
+    // For semantic-only (vector) search
+    if (searchType === 'semantic') {
+      const results = await this.search(embedding, {
+        k: limit,
+        threshold: query.threshold,
+      });
+
+      // Filter by namespace if specified
+      const filtered = query.namespace
+        ? results.filter((r) => r.entry.namespace === query.namespace)
+        : results;
+
+      return filtered.map((r) => r.entry);
+    }
+
+    // For hybrid search: combine FTS and vector results
+    const vectorResults = await this.search(embedding, {
+      k: limit * 2, // Get more candidates for fusion
+      threshold: 0.1, // Low threshold to get more candidates
+    });
+
+    // Filter vector results by namespace if specified
+    const filteredVectorResults = query.namespace
+      ? vectorResults.filter((r) => r.entry.namespace === query.namespace)
+      : vectorResults;
+
+    // Get FTS results
+    const betterBackend = backend as BetterSqlite3Backend;
+    let ftsResults: MemoryEntry[] = [];
+    if (query.content && typeof betterBackend.searchFts === 'function') {
+      ftsResults = await betterBackend.searchFts(query.content, {
+        namespace: query.namespace,
+        limit: limit * 2,
+      });
+    }
+
+    // Combine and rank results using score fusion
+    const scoreMap = new Map<string, { entry: MemoryEntry; score: number; vectorScore: number; ftsScore: number }>();
+
+    // Add vector results with scores (semantic weight: 0.7)
+    filteredVectorResults.forEach((r) => {
+      const vectorScore = r.score; // Already 0-1 similarity
+      scoreMap.set(r.entry.id, {
+        entry: r.entry,
+        score: vectorScore * 0.7,
+        vectorScore,
+        ftsScore: 0,
+      });
+    });
+
+    // Add FTS results with scores (keyword weight: 0.3)
+    ftsResults.forEach((entry, index) => {
+      const ftsScore = 1 - (index / (ftsResults.length || 1)); // Rank-based score
+      const existing = scoreMap.get(entry.id);
+      if (existing) {
+        existing.ftsScore = ftsScore;
+        existing.score += ftsScore * 0.3;
+      } else {
+        scoreMap.set(entry.id, {
+          entry,
+          score: ftsScore * 0.3,
+          vectorScore: 0,
+          ftsScore,
+        });
+      }
+    });
+
+    // Sort by combined score and return top results
+    const sorted = Array.from(scoreMap.values())
+      .sort((a, b) => b.score - a.score)
+      .slice(0, limit);
+
+    // Attach scores to entries for debugging/display
+    return sorted.map((r) => ({
+      ...r.entry,
+      _score: r.score,
+      _vectorScore: r.vectorScore,
+      _ftsScore: r.ftsScore,
+    }));
   }
 
   async search(embedding: Float32Array, options: SearchOptions): Promise<SearchResult[]> {
-    this.ensureInitialized();
+    const backend = this.ensureInitialized();
 
     if (this.vectorIndex) {
       // Use HNSW index for fast search
@@ -392,11 +548,11 @@ export class ProjectMemoryService extends EventEmitter implements IMemoryBackend
     }
 
     // Fallback to brute-force search in backend
-    return this.backend.search(embedding, options);
+    return backend.search(embedding, options);
   }
 
   async bulkInsert(entries: MemoryEntry[]): Promise<void> {
-    this.ensureInitialized();
+    this.ensureInitialized(); // store() already gets backend
 
     for (const entry of entries) {
       await this.store(entry);
@@ -418,30 +574,30 @@ export class ProjectMemoryService extends EventEmitter implements IMemoryBackend
   }
 
   async count(namespace?: string): Promise<number> {
-    this.ensureInitialized();
-    return this.backend.count(namespace);
+    const backend = this.ensureInitialized();
+    return backend.count(namespace);
   }
 
   async listNamespaces(): Promise<string[]> {
-    this.ensureInitialized();
-    return this.backend.listNamespaces();
+    const backend = this.ensureInitialized();
+    return backend.listNamespaces();
   }
 
   async clearNamespace(namespace: string): Promise<number> {
-    this.ensureInitialized();
+    const backend = this.ensureInitialized();
 
     // Clear from cache
     if (this.cache) {
       this.cache.invalidatePattern(new RegExp(`^${namespace}:`));
     }
 
-    return this.backend.clearNamespace(namespace);
+    return backend.clearNamespace(namespace);
   }
 
   async getStats(): Promise<BackendStats> {
-    this.ensureInitialized();
+    const backend = this.ensureInitialized();
 
-    const stats = await this.backend.getStats();
+    const stats = await backend.getStats();
 
     // Add HNSW stats if available
     if (this.vectorIndex) {
@@ -457,8 +613,8 @@ export class ProjectMemoryService extends EventEmitter implements IMemoryBackend
   }
 
   async healthCheck(): Promise<HealthCheckResult> {
-    this.ensureInitialized();
-    return this.backend.healthCheck();
+    const backend = this.ensureInitialized();
+    return backend.healthCheck();
   }
 
   // ===== Convenience Methods =====
@@ -626,82 +782,20 @@ export class ProjectMemoryService extends EventEmitter implements IMemoryBackend
       .filter((s): s is SessionInfo => s !== null);
   }
 
-  // ===== Migration =====
-
-  /**
-   * Migrate from existing markdown memory files
-   */
-  async migrateFromMarkdown(options: { generateEmbeddings?: boolean } = {}): Promise<MigrationResult> {
-    this.ensureInitialized();
-
-    const result = await migrateMarkdownMemory(
-      this.config.baseDir,
-      async (entry) => this.store(entry),
-      {
-        generateEmbeddings: options.generateEmbeddings ?? false,
-      }
-    );
-
-    this.emit('migration:completed', result);
-    return result;
-  }
-
-  // ===== Export =====
-
-  /**
-   * Export namespace to markdown (for git-friendly backup)
-   */
-  async exportToMarkdown(namespace: string, outputPath?: string): Promise<string> {
-    const entries = await this.getByNamespace(namespace);
-    const filePath = outputPath || path.join(this.config.baseDir, `${namespace}.md`);
-
-    let markdown = `---\nnamespace: ${namespace}\nexported: ${new Date().toISOString()}\nentries: ${entries.length}\n---\n\n`;
-
-    for (const entry of entries) {
-      markdown += `## ${entry.key}\n\n`;
-      markdown += entry.content;
-      markdown += '\n\n';
-
-      if (entry.tags.length > 0) {
-        markdown += `*Tags: ${entry.tags.join(', ')}*\n\n`;
-      }
-
-      markdown += '---\n\n';
-    }
-
-    writeFileSync(filePath, markdown, 'utf-8');
-
-    return filePath;
-  }
-
-  /**
-   * Export all namespaces to markdown
-   */
-  async exportAllToMarkdown(): Promise<string[]> {
-    const namespaces = await this.listNamespaces();
-    const files: string[] = [];
-
-    for (const namespace of namespaces) {
-      const file = await this.exportToMarkdown(namespace);
-      files.push(file);
-    }
-
-    return files;
-  }
-
   // ===== Private Methods =====
 
-  private ensureInitialized(): void {
-    if (!this.initialized) {
+  private ensureInitialized(): IMemoryBackend {
+    if (!this.initialized || !this.backend) {
       throw new Error('ProjectMemoryService not initialized. Call initialize() first.');
     }
+    return this.backend;
   }
 
   private async rebuildVectorIndex(): Promise<void> {
-    if (!this.vectorIndex) return;
+    if (!this.vectorIndex || !this.backend) return;
 
-    // Get all entries with embeddings
-    const entries = await this.query({
+    // Get all entries with embeddings (use backend directly to avoid ensureInitialized check)
+    const entries = await this.backend.query({
       type: 'hybrid',
       limit: this.config.maxEntries,
     });

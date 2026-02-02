@@ -22,9 +22,20 @@ import { MemoryHookService } from './service.js';
  */
 export class SessionInitHook implements EventHandler {
   private service: MemoryHookService;
+  private ownsService: boolean;
 
-  constructor(service: MemoryHookService) {
+  constructor(service: MemoryHookService, ownsService = false) {
     this.service = service;
+    this.ownsService = ownsService;
+  }
+
+  /**
+   * Shutdown the hook (closes database if owned)
+   */
+  async shutdown(): Promise<void> {
+    if (this.ownsService) {
+      await this.service.shutdown();
+    }
   }
 
   /**
@@ -64,7 +75,7 @@ export class SessionInitHook implements EventHandler {
  */
 export function createSessionInitHook(cwd: string): SessionInitHook {
   const service = new MemoryHookService(cwd);
-  return new SessionInitHook(service);
+  return new SessionInitHook(service, true);
 }
 
 export default SessionInitHook;

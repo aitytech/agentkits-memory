@@ -46,14 +46,13 @@
 | Feature | Benefit |
 |---------|---------|
 | **100% Local** | All data stays on your machine. No cloud, no API keys, no accounts |
-| **Blazing Fast** | SQLite + WASM = instant queries, zero latency |
+| **Blazing Fast** | Native SQLite (better-sqlite3) = instant queries, zero latency |
 | **Zero Config** | Works out of the box. No database setup required |
 | **Cross-Platform** | Windows, macOS, Linux - same code, same speed |
 | **MCP Server** | `memory_save`, `memory_search`, `memory_recall`, `memory_list`, `memory_status` |
 | **Web Viewer** | Browser UI to view, add, edit, delete memories |
 | **Vector Search** | Optional HNSW semantic similarity (no external service) |
 | **Auto-Capture** | Hooks for session context, tool usage, summaries |
-| **Git-Friendly** | Export to markdown for version control |
 
 ---
 
@@ -220,9 +219,60 @@ Memories are stored in `.claude/memory/memory.db` within your project directory.
 ```
 .claude/memory/
 ├── memory.db          # SQLite database
-├── memory.db-wal      # Write-ahead log (temp)
-└── exports/           # Optional markdown exports
+└── memory.db-wal      # Write-ahead log (temp)
 ```
+
+---
+
+## CJK Language Support
+
+AgentKits Memory has **automatic CJK support** for Chinese, Japanese, and Korean text search.
+
+### Zero Configuration
+
+When `better-sqlite3` is installed (default), CJK search works automatically:
+
+```typescript
+import { ProjectMemoryService } from '@aitytech/agentkits-memory';
+
+const memory = new ProjectMemoryService('.claude/memory');
+await memory.initialize();
+
+// Store CJK content
+await memory.storeEntry({
+  key: 'auth-pattern',
+  content: '認証機能の実装パターン - JWT with refresh tokens',
+  namespace: 'patterns',
+});
+
+// Search in Japanese, Chinese, or Korean - it just works!
+const results = await memory.query({
+  type: 'hybrid',
+  content: '認証機能',
+});
+```
+
+### How It Works
+
+- **Native SQLite**: Uses `better-sqlite3` for maximum performance
+- **Trigram tokenizer**: FTS5 with trigram creates 3-character sequences for CJK matching
+- **Smart fallback**: Short CJK queries (< 3 chars) automatically use LIKE search
+- **BM25 ranking**: Relevance scoring for search results
+
+### Advanced: Japanese Word Segmentation
+
+For advanced Japanese with proper word segmentation, optionally use lindera:
+
+```typescript
+import { createJapaneseOptimizedBackend } from '@aitytech/agentkits-memory';
+
+const backend = createJapaneseOptimizedBackend({
+  databasePath: '.claude/memory/memory.db',
+  linderaPath: './path/to/liblindera_sqlite.dylib',
+});
+```
+
+Requires [lindera-sqlite](https://github.com/lindera/lindera-sqlite) build.
 
 ---
 
@@ -258,7 +308,6 @@ interface ProjectMemoryConfig {
 | `semanticSearch(content, k)` | Semantic similarity search |
 | `count(namespace?)` | Count entries |
 | `listNamespaces()` | List all namespaces |
-| `exportToMarkdown(namespace)` | Export to markdown |
 | `getStats()` | Get statistics |
 
 ---

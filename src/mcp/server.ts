@@ -20,7 +20,8 @@
  */
 
 import * as readline from 'node:readline';
-import { ProjectMemoryService, MemoryEntry, MemoryQuery, DEFAULT_NAMESPACES } from '../index.js';
+import * as path from 'node:path';
+import { ProjectMemoryService, MemoryEntry, MemoryQuery, DEFAULT_NAMESPACES, LocalEmbeddingsService } from '../index.js';
 import { MEMORY_TOOLS } from './tools.js';
 import type {
   JSONRPCRequest,
@@ -47,6 +48,7 @@ const CATEGORY_TO_NAMESPACE: Record<string, string> = {
  */
 class MemoryMCPServer {
   private service: ProjectMemoryService | null = null;
+  private embeddingsService: LocalEmbeddingsService | null = null;
   private projectDir: string;
   private initialized = false;
 
@@ -55,13 +57,28 @@ class MemoryMCPServer {
   }
 
   /**
-   * Initialize the memory service
+   * Initialize the memory service with embeddings support
    */
   private async ensureInitialized(): Promise<ProjectMemoryService> {
     if (!this.service || !this.initialized) {
+      const baseDir = path.join(this.projectDir, '.claude/memory');
+
+      // Initialize embeddings service
+      this.embeddingsService = new LocalEmbeddingsService({
+        cacheDir: path.join(baseDir, 'embeddings-cache'),
+      });
+      await this.embeddingsService.initialize();
+
+      // Create embedding generator function
+      const embeddingGenerator = async (text: string): Promise<Float32Array> => {
+        const result = await this.embeddingsService!.embed(text);
+        return result.embedding;
+      };
+
       this.service = new ProjectMemoryService({
-        baseDir: `${this.projectDir}/.claude/memory`,
+        baseDir,
         dbFilename: 'memory.db',
+        embeddingGenerator,
       });
       await this.service.initialize();
       this.initialized = true;

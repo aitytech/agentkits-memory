@@ -405,3 +405,435 @@ describe('DEFAULT_NAMESPACES', () => {
     expect(DEFAULT_NAMESPACES.ERRORS).toBe('errors');
   });
 });
+
+describe('ProjectMemoryService with embeddings', () => {
+  let service: ProjectMemoryService;
+  let testDir: string;
+  const mockEmbeddingGenerator = vi.fn().mockImplementation(async (content: string) => {
+    // Simple mock embedding based on content length
+    const embedding = new Float32Array(8);
+    for (let i = 0; i < 8; i++) {
+      embedding[i] = (content.charCodeAt(i % content.length) / 255) - 0.5;
+    }
+    return embedding;
+  });
+
+  beforeEach(async () => {
+    testDir = path.join(tmpdir(), `embedding-test-${Date.now()}`);
+    fs.mkdirSync(testDir, { recursive: true });
+
+    service = new ProjectMemoryService({
+      baseDir: testDir,
+      dbFilename: 'test.db',
+      cacheEnabled: true,
+      enableVectorIndex: true,
+      dimensions: 8,
+      embeddingGenerator: mockEmbeddingGenerator,
+    });
+    await service.initialize();
+  });
+
+  afterEach(async () => {
+    await service.shutdown();
+    fs.rmSync(testDir, { recursive: true, force: true });
+    vi.clearAllMocks();
+  });
+
+  it('should generate embeddings when storing entries', async () => {
+    await service.storeEntry({
+      key: 'embed-test',
+      content: 'Test content for embedding',
+      namespace: 'test',
+    });
+
+    expect(mockEmbeddingGenerator).toHaveBeenCalledWith('Test content for embedding');
+  });
+
+  it('should perform semantic search', async () => {
+    await service.storeEntry({
+      key: 'auth-pattern',
+      content: 'Use JWT for authentication',
+      namespace: 'patterns',
+    });
+
+    await service.storeEntry({
+      key: 'db-pattern',
+      content: 'Use PostgreSQL for database',
+      namespace: 'patterns',
+    });
+
+    const results = await service.semanticSearch('authentication', 5);
+    expect(results.length).toBeGreaterThan(0);
+  });
+
+  it('should throw error for semantic search without embedding generator', async () => {
+    const noEmbedService = new ProjectMemoryService({
+      baseDir: path.join(testDir, 'no-embed'),
+      dbFilename: 'test.db',
+    });
+    await noEmbedService.initialize();
+
+    await expect(noEmbedService.semanticSearch('test', 5)).rejects.toThrow(
+      'Embedding generator not configured'
+    );
+
+    await noEmbedService.shutdown();
+  });
+
+  it('should use HNSW index for search with vector index enabled', async () => {
+    await service.storeEntry({
+      key: 'v1',
+      content: 'First vector content',
+      namespace: 'vectors',
+    });
+
+    await service.storeEntry({
+      key: 'v2',
+      content: 'Second vector content',
+      namespace: 'vectors',
+    });
+
+    const embedding = await mockEmbeddingGenerator('First');
+    const results = await service.search(embedding, { k: 2 });
+
+    expect(results.length).toBeLessThanOrEqual(2);
+  });
+
+  it('should update embedding when content changes', async () => {
+    const entry = await service.storeEntry({
+      key: 'update-embed',
+      content: 'Original content',
+      namespace: 'test',
+    });
+
+    const callsBefore = mockEmbeddingGenerator.mock.calls.length;
+
+    await service.update(entry.id, { content: 'Updated content' });
+
+    // Should have generated new embedding for updated content
+    expect(mockEmbeddingGenerator.mock.calls.length).toBeGreaterThan(callsBefore);
+  });
+
+  it('should handle embedding generator failure gracefully', async () => {
+    const failingGenerator = vi.fn().mockRejectedValue(new Error('Embedding failed'));
+    const failService = new ProjectMemoryService({
+      baseDir: path.join(testDir, 'fail-embed'),
+      dbFilename: 'test.db',
+      embeddingGenerator: failingGenerator,
+      verbose: true,
+    });
+    await failService.initialize();
+
+    // Should not throw, just log warning
+    const entry = await failService.storeEntry({
+      key: 'fail-test',
+      content: 'Content that will fail embedding',
+      namespace: 'test',
+    });
+
+    expect(entry.id).toBeDefined();
+    await failService.shutdown();
+  });
+
+  it('should remove from vector index when deleting', async () => {
+    const entry = await service.storeEntry({
+      key: 'delete-vector',
+      content: 'Content to delete',
+      namespace: 'test',
+    });
+
+    // Verify entry exists in vector search
+    const embedding = await mockEmbeddingGenerator('Content to delete');
+    const beforeDelete = await service.search(embedding, { k: 5 });
+    const foundBefore = beforeDelete.some(r => r.entry.id === entry.id);
+    expect(foundBefore).toBe(true);
+
+    await service.delete(entry.id);
+
+    // Entry should no longer be found
+    const afterDelete = await service.search(embedding, { k: 5 });
+    const foundAfter = afterDelete.some(r => r.entry.id === entry.id);
+    expect(foundAfter).toBe(false);
+  });
+
+  it('should apply threshold in search results', async () => {
+    await service.storeEntry({
+      key: 'similar',
+      content: 'Very similar content',
+      namespace: 'test',
+    });
+
+    await service.storeEntry({
+      key: 'different',
+      content: 'Completely different words here',
+      namespace: 'test',
+    });
+
+    const embedding = await mockEmbeddingGenerator('Very similar');
+    const results = await service.search(embedding, { k: 10, threshold: 0.9 });
+
+    // High threshold should filter out dissimilar results
+    expect(results.length).toBeLessThanOrEqual(2);
+  });
+
+  it('should include HNSW stats in getStats', async () => {
+    await service.storeEntry({
+      key: 'stats-test',
+      content: 'Content for stats',
+      namespace: 'test',
+    });
+
+    const stats = await service.getStats();
+    expect(stats.hnswStats).toBeDefined();
+    expect(stats.hnswStats!.vectorCount).toBe(1);
+  });
+
+  it('should include cache stats in getStats', async () => {
+    await service.storeEntry({
+      key: 'cache-test',
+      content: 'Content for cache',
+      namespace: 'test',
+    });
+
+    // Trigger a cache hit
+    await service.get((await service.query({ type: 'hybrid', limit: 1 }))[0].id);
+
+    const stats = await service.getStats();
+    expect(stats.cacheStats).toBeDefined();
+  });
+});
+
+describe('ProjectMemoryService with cache', () => {
+  let service: ProjectMemoryService;
+  let testDir: string;
+
+  beforeEach(async () => {
+    testDir = path.join(tmpdir(), `cache-test-${Date.now()}`);
+    fs.mkdirSync(testDir, { recursive: true });
+
+    service = new ProjectMemoryService({
+      baseDir: testDir,
+      dbFilename: 'test.db',
+      cacheEnabled: true,
+      cacheSize: 100,
+      cacheTtl: 60000,
+    });
+    await service.initialize();
+  });
+
+  afterEach(async () => {
+    await service.shutdown();
+    fs.rmSync(testDir, { recursive: true, force: true });
+  });
+
+  it('should cache entries on get', async () => {
+    const entry = await service.storeEntry({
+      key: 'cache-hit',
+      content: 'Cached content',
+      namespace: 'test',
+    });
+
+    // First get populates cache
+    const first = await service.get(entry.id);
+    expect(first).not.toBeNull();
+
+    // Second get should hit cache
+    const second = await service.get(entry.id);
+    expect(second).not.toBeNull();
+    expect(second!.id).toBe(first!.id);
+  });
+
+  it('should cache entries on getByKey', async () => {
+    await service.storeEntry({
+      key: 'cache-key',
+      content: 'Cached by key',
+      namespace: 'ns',
+    });
+
+    // First get populates cache
+    const first = await service.getByKey('ns', 'cache-key');
+    expect(first).not.toBeNull();
+
+    // Second get should hit cache
+    const second = await service.getByKey('ns', 'cache-key');
+    expect(second).not.toBeNull();
+  });
+
+  it('should update cache on update', async () => {
+    const entry = await service.storeEntry({
+      key: 'update-cache',
+      content: 'Original',
+      namespace: 'test',
+    });
+
+    await service.update(entry.id, { content: 'Updated' });
+
+    const retrieved = await service.get(entry.id);
+    expect(retrieved!.content).toBe('Updated');
+  });
+
+  it('should invalidate cache on delete', async () => {
+    const entry = await service.storeEntry({
+      key: 'delete-cache',
+      content: 'To delete',
+      namespace: 'test',
+    });
+
+    // Populate cache
+    await service.get(entry.id);
+
+    // Delete
+    await service.delete(entry.id);
+
+    // Should not find in cache or backend
+    const retrieved = await service.get(entry.id);
+    expect(retrieved).toBeNull();
+  });
+
+  it('should invalidate cache pattern on clearNamespace', async () => {
+    await service.storeEntry({ key: 'c1', content: 'C1', namespace: 'clear-ns' });
+    await service.storeEntry({ key: 'c2', content: 'C2', namespace: 'clear-ns' });
+    await service.storeEntry({ key: 'k1', content: 'K1', namespace: 'keep-ns' });
+
+    await service.clearNamespace('clear-ns');
+
+    expect(await service.count('clear-ns')).toBe(0);
+    expect(await service.count('keep-ns')).toBe(1);
+  });
+});
+
+describe('ProjectMemoryService error handling', () => {
+  it('should throw error when not initialized', async () => {
+    const service = new ProjectMemoryService({
+      baseDir: path.join(tmpdir(), 'not-init-test'),
+    });
+
+    await expect(service.get('some-id')).rejects.toThrow('not initialized');
+    await expect(service.query({ type: 'hybrid', limit: 10 })).rejects.toThrow('not initialized');
+  });
+
+  it('should handle shutdown with active session', async () => {
+    const testDir = path.join(tmpdir(), `session-shutdown-${Date.now()}`);
+    fs.mkdirSync(testDir, { recursive: true });
+
+    const service = new ProjectMemoryService({ baseDir: testDir });
+    await service.initialize();
+
+    await service.startSession();
+
+    // Shutdown should end the session automatically
+    await service.shutdown();
+
+    // Verify session was ended
+    expect(service.getCurrentSession()).toBeNull();
+
+    fs.rmSync(testDir, { recursive: true, force: true });
+  });
+
+  it('should handle double initialization', async () => {
+    const testDir = path.join(tmpdir(), `double-init-${Date.now()}`);
+    fs.mkdirSync(testDir, { recursive: true });
+
+    const service = new ProjectMemoryService({ baseDir: testDir });
+    await service.initialize();
+    await service.initialize(); // Should not throw
+
+    await service.shutdown();
+    fs.rmSync(testDir, { recursive: true, force: true });
+  });
+
+  it('should handle double shutdown', async () => {
+    const testDir = path.join(tmpdir(), `double-shutdown-${Date.now()}`);
+    fs.mkdirSync(testDir, { recursive: true });
+
+    const service = new ProjectMemoryService({ baseDir: testDir });
+    await service.initialize();
+    await service.shutdown();
+    await service.shutdown(); // Should not throw
+
+    fs.rmSync(testDir, { recursive: true, force: true });
+  });
+
+  it('should return null when ending non-existent session', async () => {
+    const testDir = path.join(tmpdir(), `no-session-${Date.now()}`);
+    fs.mkdirSync(testDir, { recursive: true });
+
+    const service = new ProjectMemoryService({ baseDir: testDir });
+    await service.initialize();
+
+    const result = await service.endSession('summary');
+    expect(result).toBeNull();
+
+    await service.shutdown();
+    fs.rmSync(testDir, { recursive: true, force: true });
+  });
+
+  it('should handle delete of non-existent entry', async () => {
+    const testDir = path.join(tmpdir(), `delete-none-${Date.now()}`);
+    fs.mkdirSync(testDir, { recursive: true });
+
+    const service = new ProjectMemoryService({ baseDir: testDir });
+    await service.initialize();
+
+    const result = await service.delete('non-existent-id');
+    expect(result).toBe(false);
+
+    await service.shutdown();
+    fs.rmSync(testDir, { recursive: true, force: true });
+  });
+
+  it('should handle getRecentSessions with invalid JSON', async () => {
+    const testDir = path.join(tmpdir(), `invalid-session-${Date.now()}`);
+    fs.mkdirSync(testDir, { recursive: true });
+
+    const service = new ProjectMemoryService({ baseDir: testDir });
+    await service.initialize();
+
+    // Store invalid session data
+    await service.storeEntry({
+      key: 'session:invalid',
+      content: 'not valid json {{{',
+      namespace: DEFAULT_NAMESPACES.SESSION,
+      tags: ['session'],
+    });
+
+    // Should filter out invalid entries
+    const sessions = await service.getRecentSessions();
+    expect(sessions.every(s => s.id !== undefined)).toBe(true);
+
+    await service.shutdown();
+    fs.rmSync(testDir, { recursive: true, force: true });
+  });
+});
+
+describe('createEmbeddingMemory factory', () => {
+  let testDir: string;
+
+  beforeEach(() => {
+    testDir = path.join(tmpdir(), `embed-factory-${Date.now()}`);
+  });
+
+  afterEach(() => {
+    fs.rmSync(testDir, { recursive: true, force: true });
+  });
+
+  it('should create memory service with embedding support', async () => {
+    const { createEmbeddingMemory } = await import('../index.js');
+
+    const mockGenerator = vi.fn().mockResolvedValue(new Float32Array(128));
+
+    const service = createEmbeddingMemory(testDir, mockGenerator, 128);
+    await service.initialize();
+
+    // Store an entry to trigger embedding generation
+    await service.storeEntry({
+      key: 'embed-test',
+      content: 'Test content',
+      namespace: 'test',
+    });
+
+    expect(mockGenerator).toHaveBeenCalled();
+
+    await service.shutdown();
+  });
+});
