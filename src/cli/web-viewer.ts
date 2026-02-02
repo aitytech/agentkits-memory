@@ -699,7 +699,14 @@ function getHTML(): string {
       gap: 12px;
     }
 
-    .entry-key { font-weight: 600; font-size: 15px; color: var(--text-primary); word-break: break-word; }
+    .entry-key { font-weight: 600; font-size: 15px; color: var(--text-primary); word-break: break-word; flex: 1; }
+
+    .entry-badges {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-shrink: 0;
+    }
 
     .entry-namespace {
       font-size: 12px;
@@ -1241,12 +1248,14 @@ function getHTML(): string {
             <div class="entry-card" onclick="showDetail('\${entry.id}')">
               <div class="entry-header">
                 <span class="entry-key">\${escapeHtml(entry.key)}</span>
-                \${entry.hasEmbedding ?
-                  \`<span class="vector-badge has-vector" title="Vector embedding enabled for semantic search">Vec</span>\` :
-                  \`<span class="vector-badge no-vector" title="No vector embedding">--</span>\`
-                }
-                \${entry.score !== undefined ? \`<span class="score-badge">\${(entry.score * 100).toFixed(1)}%</span>\` : ''}
-                <span class="entry-namespace">\${entry.namespace}</span>
+                <div class="entry-badges">
+                  \${entry.score !== undefined ? \`<span class="score-badge">\${(entry.score * 100).toFixed(1)}%</span>\` : ''}
+                  \${entry.hasEmbedding ?
+                    \`<span class="vector-badge has-vector" title="Vector embedding enabled">Vec</span>\` :
+                    \`<span class="vector-badge no-vector" title="No vector embedding">--</span>\`
+                  }
+                  <span class="entry-namespace">\${entry.namespace}</span>
+                </div>
               </div>
               <div class="entry-content truncated">\${escapeHtml(entry.content)}</div>
               <div class="entry-footer">
