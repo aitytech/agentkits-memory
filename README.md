@@ -314,8 +314,42 @@ interface ProjectMemoryConfig {
 
 ## Requirements
 
-- Node.js >= 18.0.0
+- **Node.js LTS**: 18.x, 20.x, or 22.x (recommended)
 - MCP-compatible AI coding assistant
+
+### Node.js Version Notes
+
+This package uses `better-sqlite3` which requires native binaries. **Prebuilt binaries are available for LTS versions only**.
+
+| Node Version | Status | Notes |
+|--------------|--------|-------|
+| 18.x LTS | ✅ Works | Prebuilt binaries |
+| 20.x LTS | ✅ Works | Prebuilt binaries |
+| 22.x LTS | ✅ Works | Prebuilt binaries |
+| 19.x, 21.x, 23.x | ⚠️ Requires build tools | No prebuilt binaries |
+
+### Using Non-LTS Versions (Windows)
+
+If you must use a non-LTS version (19, 21, 23), install build tools first:
+
+**Option 1: Visual Studio Build Tools**
+```powershell
+# Download and install from:
+# https://visualstudio.microsoft.com/visual-cpp-build-tools/
+# Select "Desktop development with C++" workload
+```
+
+**Option 2: windows-build-tools (npm)**
+```powershell
+npm install --global windows-build-tools
+```
+
+**Option 3: Chocolatey**
+```powershell
+choco install visualstudio2022-workload-vctools
+```
+
+See [node-gyp Windows guide](https://github.com/nodejs/node-gyp#on-windows) for more details.
 
 ---
 
