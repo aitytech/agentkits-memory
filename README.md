@@ -53,7 +53,6 @@
 | **Web Viewer** | Browser UI to view, add, edit, delete memories |
 | **Vector Search** | Optional HNSW semantic similarity (no external service) |
 | **Auto-Capture** | Hooks for session context, tool usage, summaries |
-| **Git-Friendly** | Export to markdown for version control |
 
 ---
 
@@ -220,8 +219,7 @@ Memories are stored in `.claude/memory/memory.db` within your project directory.
 ```
 .claude/memory/
 ├── memory.db          # SQLite database
-├── memory.db-wal      # Write-ahead log (temp)
-└── exports/           # Optional markdown exports
+└── memory.db-wal      # Write-ahead log (temp)
 ```
 
 ---
@@ -310,7 +308,6 @@ interface ProjectMemoryConfig {
 | `semanticSearch(content, k)` | Semantic similarity search |
 | `count(namespace?)` | Count entries |
 | `listNamespaces()` | List all namespaces |
-| `exportToMarkdown(namespace)` | Export to markdown |
 | `getStats()` | Get statistics |
 
 ---

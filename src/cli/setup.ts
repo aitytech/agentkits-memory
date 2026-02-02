@@ -2,7 +2,7 @@
 /**
  * AgentKits Memory Setup CLI
  *
- * Sets up memory hooks in a project's .claude/settings.json
+ * Sets up memory hooks and downloads embedding model.
  *
  * Usage:
  *   npx agentkits-memory-setup [options]
@@ -10,6 +10,7 @@
  * Options:
  *   --project-dir=X   Project directory (default: cwd)
  *   --force           Overwrite existing hooks
+ *   --skip-model      Skip embedding model download
  *   --json            Output result as JSON
  *
  * @module @agentkits/memory/cli/setup
@@ -17,6 +18,7 @@
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { LocalEmbeddingsService } from '../embeddings/local-embeddings.js';
 
 const args = process.argv.slice(2);
 
@@ -114,11 +116,48 @@ function mergeHooks(
   return merged;
 }
 
+async function downloadModel(cacheDir: string, asJson: boolean): Promise<boolean> {
+  if (!asJson) {
+    console.log('\n📥 Downloading embedding model...');
+    console.log('   Model: multilingual-e5-small (~470MB)');
+    console.log('   This enables semantic search in 100+ languages.\n');
+  }
+
+  try {
+    const embeddingsService = new LocalEmbeddingsService({
+      showProgress: !asJson,
+      cacheDir: path.join(cacheDir, 'embeddings-cache'),
+    });
+
+    await embeddingsService.initialize();
+
+    // Verify model works with a test embedding
+    const testResult = await embeddingsService.embed('Test embedding');
+
+    if (testResult.embedding.length !== 384) {
+      throw new Error(`Unexpected embedding dimension: ${testResult.embedding.length}`);
+    }
+
+    if (!asJson) {
+      console.log('   ✓ Model downloaded and verified\n');
+    }
+
+    return true;
+  } catch (error) {
+    if (!asJson) {
+      console.error('   ⚠ Model download failed:', error instanceof Error ? error.message : error);
+      console.log('   Model will be downloaded on first use.\n');
+    }
+    return false;
+  }
+}
+
 async function main() {
   const options = parseArgs();
   const projectDir = (options['project-dir'] as string) || process.env.CLAUDE_PROJECT_DIR || process.cwd();
   const force = !!options.force;
   const asJson = !!options.json;
+  const skipModel = !!options['skip-model'];
 
   const claudeDir = path.join(projectDir, '.claude');
   const settingsPath = path.join(claudeDir, 'settings.json');
@@ -146,26 +185,10 @@ async function main() {
     // Write settings
     fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2));
 
-    // Create initial memory files if they don't exist
-    const activeContextPath = path.join(memoryDir, 'active-context.md');
-    if (!fs.existsSync(activeContextPath)) {
-      fs.writeFileSync(
-        activeContextPath,
-        `# Active Context
-
-**Task**: None
-**Status**: Ready
-**Updated**: ${new Date().toISOString()}
-
-## Current Focus
-
-No active task.
-
-## Notes
-
-Memory system initialized.
-`
-      );
+    // Download embedding model
+    let modelDownloaded = false;
+    if (!skipModel) {
+      modelDownloaded = await downloadModel(memoryDir, asJson);
     }
 
     const result = {
@@ -173,16 +196,22 @@ Memory system initialized.
       settingsPath,
       memoryDir,
       hooksAdded: Object.keys(MEMORY_HOOKS),
-      message: 'Memory hooks configured successfully',
+      modelDownloaded,
+      message: 'Memory setup complete',
     };
 
     if (asJson) {
       console.log(JSON.stringify(result, null, 2));
     } else {
-      console.log('\n✅ AgentKits Memory Setup Complete\n');
+      console.log('✅ AgentKits Memory Setup Complete\n');
       console.log(`Settings: ${settingsPath}`);
       console.log(`Memory:   ${memoryDir}`);
       console.log(`\nHooks added: ${result.hooksAdded.join(', ')}`);
+      if (modelDownloaded) {
+        console.log('Model: Downloaded and ready');
+      } else if (skipModel) {
+        console.log('Model: Skipped (will download on first use)');
+      }
       console.log('\nRestart Claude Code to activate memory hooks.\n');
     }
   } catch (error) {

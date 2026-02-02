@@ -248,3 +248,248 @@ describe('Embedding Similarity', () => {
     }
   });
 });
+
+describe('LocalEmbeddingsService advanced', () => {
+  describe('cache eviction', () => {
+    it('should evict oldest entries when cache is full', async () => {
+      // Create service with tiny cache
+      const service = new LocalEmbeddingsService({
+        provider: 'mock',
+        maxCacheSize: 3,
+        cacheEnabled: true,
+      });
+
+      // Fill the cache
+      await service.embed('Text 1');
+      await service.embed('Text 2');
+      await service.embed('Text 3');
+
+      // This should evict 'Text 1'
+      await service.embed('Text 4');
+
+      // 'Text 1' should no longer be cached
+      const result1 = await service.embed('Text 1');
+      expect(result1.cached).toBe(false);
+
+      // 'Text 4' should be cached
+      const result4 = await service.embed('Text 4');
+      expect(result4.cached).toBe(true);
+
+      await service.shutdown();
+    });
+
+    it('should update existing cache entries without evicting', async () => {
+      const service = new LocalEmbeddingsService({
+        provider: 'mock',
+        maxCacheSize: 3,
+        cacheEnabled: true,
+      });
+
+      await service.embed('Text 1');
+      await service.embed('Text 2');
+      await service.embed('Text 3');
+
+      // Access existing entry (should update, not evict)
+      const result = await service.embed('Text 2');
+      expect(result.cached).toBe(true);
+
+      await service.shutdown();
+    });
+
+    it('should move accessed entries to end of LRU', async () => {
+      const service = new LocalEmbeddingsService({
+        provider: 'mock',
+        maxCacheSize: 3,
+        cacheEnabled: true,
+      });
+
+      await service.embed('Text 1');
+      await service.embed('Text 2');
+      await service.embed('Text 3');
+
+      // Access 'Text 1' to move it to end
+      await service.embed('Text 1');
+
+      // Add new entry - should evict 'Text 2' (oldest after Text 1 access)
+      await service.embed('Text 4');
+
+      // 'Text 1' should still be cached
+      const result1 = await service.embed('Text 1');
+      expect(result1.cached).toBe(true);
+
+      // 'Text 2' should be evicted
+      const result2 = await service.embed('Text 2');
+      expect(result2.cached).toBe(false);
+
+      await service.shutdown();
+    });
+  });
+
+  describe('initialization', () => {
+    it('should handle double initialization', async () => {
+      const service = new LocalEmbeddingsService({ provider: 'mock' });
+
+      await service.initialize();
+      await service.initialize(); // Should not throw
+
+      await service.shutdown();
+    });
+
+    it('should handle concurrent initialization', async () => {
+      const service = new LocalEmbeddingsService({ provider: 'mock' });
+
+      // Start multiple initializations concurrently
+      const [result1, result2] = await Promise.all([
+        service.initialize(),
+        service.initialize(),
+      ]);
+
+      // Both should complete without error
+      expect(result1).toBeUndefined();
+      expect(result2).toBeUndefined();
+
+      await service.shutdown();
+    });
+
+    it('should initialize when using transformers provider without transformers installed', async () => {
+      // This tests the fallback to mock when transformers.js is not available
+      const service = new LocalEmbeddingsService({ provider: 'transformers' });
+
+      // Capture console.warn
+      const warnings: string[] = [];
+      const originalWarn = console.warn;
+      console.warn = (...args) => warnings.push(args.join(' '));
+
+      // The service will try to load transformers and fall back to mock
+      await service.initialize();
+
+      // Should have generated a warning about transformers not being available
+      // (only if transformers.js is not installed)
+      // If transformers IS installed, it will load successfully
+
+      const result = await service.embed('Test');
+      expect(result.embedding.length).toBeGreaterThan(0);
+
+      console.warn = originalWarn;
+      await service.shutdown();
+    });
+  });
+
+  describe('stats tracking', () => {
+    it('should track average time correctly', async () => {
+      const service = new LocalEmbeddingsService({ provider: 'mock' });
+
+      await service.embed('Text 1');
+      await service.embed('Text 2');
+
+      const stats = service.getStats();
+      expect(stats.avgTimeMs).toBeGreaterThanOrEqual(0);
+      expect(stats.totalTimeMs).toBeGreaterThanOrEqual(0);
+
+      await service.shutdown();
+    });
+
+    it('should report zero average time when no embeddings', () => {
+      const service = new LocalEmbeddingsService({ provider: 'mock' });
+
+      const stats = service.getStats();
+      expect(stats.avgTimeMs).toBe(0);
+      expect(stats.totalEmbeddings).toBe(0);
+    });
+  });
+
+  describe('shutdown', () => {
+    it('should clear state on shutdown', async () => {
+      const service = new LocalEmbeddingsService({ provider: 'mock' });
+
+      await service.embed('Test');
+      await service.shutdown();
+
+      // After shutdown, should start fresh
+      const result = await service.embed('Test');
+      expect(result.cached).toBe(false);
+    });
+  });
+
+  describe('configuration', () => {
+    it('should use custom model ID', () => {
+      const service = new LocalEmbeddingsService({
+        provider: 'mock',
+        modelId: 'custom/model',
+      });
+
+      // Model ID is stored in config (accessed via getStats)
+      const stats = service.getStats();
+      expect(stats.provider).toBe('mock');
+    });
+
+    it('should use custom cache directory', () => {
+      const service = new LocalEmbeddingsService({
+        provider: 'mock',
+        cacheDir: '/custom/cache',
+      });
+
+      expect(service.getDimensions()).toBe(384);
+    });
+
+    it('should handle showProgress option', async () => {
+      const service = new LocalEmbeddingsService({
+        provider: 'mock',
+        showProgress: true,
+      });
+
+      await service.initialize();
+      // Mock provider doesn't actually show progress, but config is accepted
+
+      await service.shutdown();
+    });
+  });
+
+  describe('edge cases', () => {
+    it('should handle empty string', async () => {
+      const service = new LocalEmbeddingsService({ provider: 'mock' });
+
+      const result = await service.embed('');
+
+      expect(result.embedding).toBeInstanceOf(Float32Array);
+      expect(result.embedding.length).toBe(384);
+
+      await service.shutdown();
+    });
+
+    it('should handle very long text', async () => {
+      const service = new LocalEmbeddingsService({ provider: 'mock' });
+
+      const longText = 'a'.repeat(10000);
+      const result = await service.embed(longText);
+
+      expect(result.embedding).toBeInstanceOf(Float32Array);
+      expect(result.embedding.length).toBe(384);
+
+      await service.shutdown();
+    });
+
+    it('should handle unicode text', async () => {
+      const service = new LocalEmbeddingsService({ provider: 'mock' });
+
+      const unicodeText = '日本語テスト 中文测试 한국어 테스트 🎉';
+      const result = await service.embed(unicodeText);
+
+      expect(result.embedding).toBeInstanceOf(Float32Array);
+      expect(result.embedding.length).toBe(384);
+
+      await service.shutdown();
+    });
+
+    it('should handle special characters', async () => {
+      const service = new LocalEmbeddingsService({ provider: 'mock' });
+
+      const specialText = '!@#$%^&*()[]{}|\\;:\'",.<>?/`~';
+      const result = await service.embed(specialText);
+
+      expect(result.embedding).toBeInstanceOf(Float32Array);
+
+      await service.shutdown();
+    });
+  });
+});

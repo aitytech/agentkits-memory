@@ -42,7 +42,7 @@
  */
 
 import { EventEmitter } from 'node:events';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync } from 'node:fs';
 import * as path from 'node:path';
 import {
   IMemoryBackend,
@@ -56,7 +56,6 @@ import {
   HealthCheckResult,
   EmbeddingGenerator,
   SessionInfo,
-  MigrationResult,
   createDefaultEntry,
   generateSessionId,
   DEFAULT_NAMESPACES,
@@ -65,13 +64,11 @@ import {
 import { BetterSqlite3Backend } from './better-sqlite3-backend.js';
 import { CacheManager } from './cache-manager.js';
 import { HNSWIndex } from './hnsw-index.js';
-import { MemoryMigrator, migrateMarkdownMemory } from './migration.js';
 
 // Re-export types
 export * from './types.js';
 export { CacheManager, TieredCacheManager } from './cache-manager.js';
 export { HNSWIndex } from './hnsw-index.js';
-export { MemoryMigrator, migrateMarkdownMemory } from './migration.js';
 export {
   LocalEmbeddingsService,
   createLocalEmbeddings,
@@ -661,69 +658,6 @@ export class ProjectMemoryService extends EventEmitter implements IMemoryBackend
       .filter((s): s is SessionInfo => s !== null);
   }
 
-  // ===== Migration =====
-
-  /**
-   * Migrate from existing markdown memory files
-   */
-  async migrateFromMarkdown(options: { generateEmbeddings?: boolean } = {}): Promise<MigrationResult> {
-    this.ensureInitialized();
-
-    const result = await migrateMarkdownMemory(
-      this.config.baseDir,
-      async (entry) => this.store(entry),
-      {
-        generateEmbeddings: options.generateEmbeddings ?? false,
-      }
-    );
-
-    this.emit('migration:completed', result);
-    return result;
-  }
-
-  // ===== Export =====
-
-  /**
-   * Export namespace to markdown (for git-friendly backup)
-   */
-  async exportToMarkdown(namespace: string, outputPath?: string): Promise<string> {
-    const entries = await this.getByNamespace(namespace);
-    const filePath = outputPath || path.join(this.config.baseDir, `${namespace}.md`);
-
-    let markdown = `---\nnamespace: ${namespace}\nexported: ${new Date().toISOString()}\nentries: ${entries.length}\n---\n\n`;
-
-    for (const entry of entries) {
-      markdown += `## ${entry.key}\n\n`;
-      markdown += entry.content;
-      markdown += '\n\n';
-
-      if (entry.tags.length > 0) {
-        markdown += `*Tags: ${entry.tags.join(', ')}*\n\n`;
-      }
-
-      markdown += '---\n\n';
-    }
-
-    writeFileSync(filePath, markdown, 'utf-8');
-
-    return filePath;
-  }
-
-  /**
-   * Export all namespaces to markdown
-   */
-  async exportAllToMarkdown(): Promise<string[]> {
-    const namespaces = await this.listNamespaces();
-    const files: string[] = [];
-
-    for (const namespace of namespaces) {
-      const file = await this.exportToMarkdown(namespace);
-      files.push(file);
-    }
-
-    return files;
-  }
-
   // ===== Private Methods =====
 
   private ensureInitialized(): IMemoryBackend {
@@ -734,10 +668,10 @@ export class ProjectMemoryService extends EventEmitter implements IMemoryBackend
   }
 
   private async rebuildVectorIndex(): Promise<void> {
-    if (!this.vectorIndex) return;
+    if (!this.vectorIndex || !this.backend) return;
 
-    // Get all entries with embeddings
-    const entries = await this.query({
+    // Get all entries with embeddings (use backend directly to avoid ensureInitialized check)
+    const entries = await this.backend.query({
       type: 'hybrid',
       limit: this.config.maxEntries,
     });

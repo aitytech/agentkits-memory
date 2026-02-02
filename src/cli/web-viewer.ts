@@ -2,7 +2,8 @@
 /**
  * AgentKits Memory Web Viewer
  *
- * Web-based viewer for memory database with CRUD support.
+ * Web-based viewer for memory database with hybrid search support.
+ * Uses ProjectMemoryService for vector + text search.
  *
  * Usage:
  *   npx agentkits-memory-web [--port=1905]
@@ -11,13 +12,16 @@
  */
 
 import * as http from 'node:http';
-import * as fs from 'node:fs';
 import * as path from 'node:path';
 import Database from 'better-sqlite3';
 import type { Database as BetterDatabase } from 'better-sqlite3';
+import { HybridSearchEngine, LocalEmbeddingsService } from '../index.js';
 
 const args = process.argv.slice(2);
 const projectDir = process.env.CLAUDE_PROJECT_DIR || process.cwd();
+
+// Embeddings service singleton
+let _embeddingsService: LocalEmbeddingsService | null = null;
 
 function parseArgs(): Record<string, string | boolean> {
   const parsed: Record<string, string | boolean> = {};
@@ -36,74 +40,56 @@ const PORT = parseInt(options.port as string, 10) || 1905;
 const dbDir = path.join(projectDir, '.claude/memory');
 const dbPath = path.join(dbDir, 'memory.db');
 
-// Singleton database connection
+// Singleton database and search engine
+let _searchEngine: HybridSearchEngine | null = null;
 let _db: BetterDatabase | null = null;
 
+/**
+ * Get direct database access
+ */
 function getDatabase(): BetterDatabase {
   if (_db) return _db;
-
-  // Ensure directory exists
-  if (!fs.existsSync(dbDir)) {
-    fs.mkdirSync(dbDir, { recursive: true });
-  }
-
   _db = new Database(dbPath);
-
-  // Enable WAL mode for better performance
   _db.pragma('journal_mode = WAL');
-
-  // Create table if not exists
-  _db.exec(`
-    CREATE TABLE IF NOT EXISTS memory_entries (
-      id TEXT PRIMARY KEY,
-      key TEXT NOT NULL,
-      content TEXT NOT NULL,
-      type TEXT DEFAULT 'semantic',
-      namespace TEXT DEFAULT 'general',
-      tags TEXT DEFAULT '[]',
-      metadata TEXT DEFAULT '{}',
-      embedding BLOB,
-      created_at INTEGER NOT NULL,
-      updated_at INTEGER NOT NULL,
-      accessed_at INTEGER,
-      access_count INTEGER DEFAULT 0,
-      importance REAL DEFAULT 0.5,
-      decay_rate REAL DEFAULT 0.1
-    )
-  `);
-
-  _db.exec(`CREATE INDEX IF NOT EXISTS idx_namespace ON memory_entries(namespace)`);
-  _db.exec(`CREATE INDEX IF NOT EXISTS idx_key ON memory_entries(key)`);
-  _db.exec(`CREATE INDEX IF NOT EXISTS idx_created ON memory_entries(created_at)`);
-
-  // Create FTS5 table with trigram tokenizer for CJK support
-  try {
-    _db.exec(`
-      CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(
-        id,
-        key,
-        content,
-        tags,
-        tokenize='trigram'
-      )
-    `);
-
-    // Populate FTS table with existing entries
-    _db.exec(`
-      INSERT OR IGNORE INTO memory_fts(id, key, content, tags)
-      SELECT id, key, content, tags FROM memory_entries
-    `);
-  } catch (e) {
-    console.warn('[WebViewer] FTS5 trigram not available:', (e as Error).message);
-  }
-
   return _db;
 }
 
-function generateId(): string {
-  return `mem_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+/**
+ * Get or initialize embeddings service
+ */
+async function getEmbeddingsService(): Promise<LocalEmbeddingsService> {
+  if (_embeddingsService) return _embeddingsService;
+
+  _embeddingsService = new LocalEmbeddingsService({
+    cacheDir: path.join(dbDir, 'embeddings-cache'),
+  });
+  await _embeddingsService.initialize();
+  return _embeddingsService;
 }
 
+/**
+ * Get or initialize the HybridSearchEngine with embeddings
+ */
+async function getSearchEngine(): Promise<HybridSearchEngine> {
+  if (_searchEngine) return _searchEngine;
+
+  const db = getDatabase();
+  const embeddings = await getEmbeddingsService();
+
+  // Create embedding generator function
+  const embeddingGenerator = async (text: string): Promise<Float32Array> => {
+    const result = await embeddings.embed(text);
+    return result.embedding;
+  };
+
+  _searchEngine = new HybridSearchEngine(db, {}, embeddingGenerator);
+  await _searchEngine.initialize();
+  return _searchEngine;
+}
+
+/**
+ * Get database statistics using direct SQL (faster for stats queries)
+ */
 function getStats(db: BetterDatabase): {
   total: number;
   byNamespace: Record<string, number>;
@@ -156,13 +142,10 @@ function getStats(db: BetterDatabase): {
   };
 }
 
-function getEntries(
-  db: BetterDatabase,
-  namespace?: string,
-  limit = 50,
-  offset = 0,
-  search?: string
-): Array<{
+/**
+ * Result type for getEntries with optional score and embedding info
+ */
+interface EntryResult {
   id: string;
   key: string;
   content: string;
@@ -171,84 +154,210 @@ function getEntries(
   tags: string[];
   created_at: number;
   updated_at: number;
-}> {
-  // Use FTS5 search for better CJK support
-  if (search && search.trim()) {
-    const sanitizedSearch = search.trim().replace(/"/g, '""');
-    let ftsQuery = `
-      SELECT m.id, m.key, m.content, m.type, m.namespace, m.tags, m.created_at, m.updated_at
-      FROM memory_entries m
-      INNER JOIN memory_fts f ON m.id = f.id
-      WHERE memory_fts MATCH '"${sanitizedSearch}"'
-    `;
+  score?: number;
+  hasEmbedding?: boolean;
+}
+
+/**
+ * Get entries with optional search (standard listing)
+ */
+function getEntries(
+  db: BetterDatabase,
+  namespace?: string,
+  limit = 50,
+  offset = 0,
+  search?: string
+): EntryResult[] {
+  // Standard query without search
+  if (!search || !search.trim()) {
+    let query = 'SELECT id, key, content, type, namespace, tags, embedding, created_at, updated_at FROM memory_entries';
+    const conditions: string[] = [];
+    const params: (string | number)[] = [];
 
     if (namespace) {
-      ftsQuery += ` AND m.namespace = ?`;
+      conditions.push('namespace = ?');
+      params.push(namespace);
     }
 
-    ftsQuery += ` ORDER BY m.created_at DESC LIMIT ? OFFSET ?`;
-
-    try {
-      const params = namespace ? [namespace, limit, offset] : [limit, offset];
-      const rows = db.prepare(ftsQuery).all(...params) as {
-        id: string;
-        key: string;
-        content: string;
-        type: string;
-        namespace: string;
-        tags: string;
-        created_at: number;
-        updated_at: number;
-      }[];
-
-      return rows.map((row) => ({
-        ...row,
-        tags: JSON.parse(row.tags || '[]'),
-      }));
-    } catch {
-      // Fallback to LIKE if FTS fails
-      console.warn('[WebViewer] FTS search failed, falling back to LIKE');
+    if (conditions.length > 0) {
+      query += ' WHERE ' + conditions.join(' AND ');
     }
+
+    query += ' ORDER BY created_at DESC LIMIT ? OFFSET ?';
+    params.push(limit, offset);
+
+    const rows = db.prepare(query).all(...params) as {
+      id: string;
+      key: string;
+      content: string;
+      type: string;
+      namespace: string;
+      tags: string;
+      embedding: Buffer | null;
+      created_at: number;
+      updated_at: number;
+    }[];
+
+    return rows.map((row) => ({
+      id: row.id,
+      key: row.key,
+      content: row.content,
+      type: row.type,
+      namespace: row.namespace,
+      tags: JSON.parse(row.tags || '[]'),
+      created_at: row.created_at,
+      updated_at: row.updated_at,
+      hasEmbedding: !!(row.embedding && row.embedding.length > 0),
+    }));
   }
 
-  // Standard query (no search or FTS fallback)
-  let query = 'SELECT id, key, content, type, namespace, tags, created_at, updated_at FROM memory_entries';
-  const conditions: string[] = [];
-  const params: (string | number)[] = [];
+  // Use FTS5 search for better CJK support
+  const sanitizedSearch = search.trim().replace(/"/g, '""');
+  let ftsQuery = `
+    SELECT m.id, m.key, m.content, m.type, m.namespace, m.tags, m.embedding, m.created_at, m.updated_at
+    FROM memory_entries m
+    INNER JOIN memory_fts f ON m.id = f.id
+    WHERE memory_fts MATCH '"${sanitizedSearch}"'
+  `;
 
   if (namespace) {
-    conditions.push('namespace = ?');
-    params.push(namespace);
+    ftsQuery += ` AND m.namespace = ?`;
   }
 
-  if (search && search.trim()) {
+  ftsQuery += ` ORDER BY m.created_at DESC LIMIT ? OFFSET ?`;
+
+  try {
+    const params = namespace ? [namespace, limit, offset] : [limit, offset];
+    const rows = db.prepare(ftsQuery).all(...params) as {
+      id: string;
+      key: string;
+      content: string;
+      type: string;
+      namespace: string;
+      tags: string;
+      embedding: Buffer | null;
+      created_at: number;
+      updated_at: number;
+    }[];
+
+    return rows.map((row) => ({
+      id: row.id,
+      key: row.key,
+      content: row.content,
+      type: row.type,
+      namespace: row.namespace,
+      tags: JSON.parse(row.tags || '[]'),
+      created_at: row.created_at,
+      updated_at: row.updated_at,
+      hasEmbedding: !!(row.embedding && row.embedding.length > 0),
+    }));
+  } catch {
+    // Fallback to LIKE if FTS fails
+    console.warn('[WebViewer] FTS search failed, falling back to LIKE');
+
+    let query = 'SELECT id, key, content, type, namespace, tags, embedding, created_at, updated_at FROM memory_entries';
+    const conditions: string[] = [];
+    const params: (string | number)[] = [];
+
+    if (namespace) {
+      conditions.push('namespace = ?');
+      params.push(namespace);
+    }
+
     conditions.push('(content LIKE ? OR key LIKE ? OR tags LIKE ?)');
     const searchPattern = `%${search}%`;
     params.push(searchPattern, searchPattern, searchPattern);
-  }
 
-  if (conditions.length > 0) {
     query += ' WHERE ' + conditions.join(' AND ');
+    query += ' ORDER BY created_at DESC LIMIT ? OFFSET ?';
+    params.push(limit, offset);
+
+    const rows = db.prepare(query).all(...params) as {
+      id: string;
+      key: string;
+      content: string;
+      type: string;
+      namespace: string;
+      tags: string;
+      embedding: Buffer | null;
+      created_at: number;
+      updated_at: number;
+    }[];
+
+    return rows.map((row) => ({
+      id: row.id,
+      key: row.key,
+      content: row.content,
+      type: row.type,
+      namespace: row.namespace,
+      tags: JSON.parse(row.tags || '[]'),
+      created_at: row.created_at,
+      updated_at: row.updated_at,
+      hasEmbedding: !!(row.embedding && row.embedding.length > 0),
+    }));
+  }
+}
+
+/**
+ * Search entries using HybridSearchEngine
+ * Supports hybrid (text + vector), text-only, or vector-only search
+ */
+async function searchEntries(
+  searchEngine: HybridSearchEngine,
+  query: string,
+  options: {
+    type?: 'hybrid' | 'text' | 'vector';
+    namespace?: string;
+    limit?: number;
+  } = {}
+): Promise<EntryResult[]> {
+  const { type = 'hybrid', namespace, limit = 20 } = options;
+
+  // Use searchCompact for efficient search with scores
+  const results = await searchEngine.searchCompact(query, {
+    limit,
+    namespace,
+    includeKeyword: type === 'hybrid' || type === 'text',
+    includeSemantic: type === 'hybrid' || type === 'vector',
+  });
+
+  // Fetch full entries for the results
+  const db = getDatabase();
+  const entries: EntryResult[] = [];
+
+  for (const result of results) {
+    const row = db.prepare(`
+      SELECT id, key, content, type, namespace, tags, embedding, created_at, updated_at
+      FROM memory_entries WHERE id = ?
+    `).get(result.id) as {
+      id: string;
+      key: string;
+      content: string;
+      type: string;
+      namespace: string;
+      tags: string;
+      embedding: Buffer | null;
+      created_at: number;
+      updated_at: number;
+    } | undefined;
+
+    if (row) {
+      entries.push({
+        id: row.id,
+        key: row.key,
+        content: row.content,
+        type: row.type,
+        namespace: row.namespace,
+        tags: JSON.parse(row.tags || '[]'),
+        created_at: row.created_at,
+        updated_at: row.updated_at,
+        score: result.score,
+        hasEmbedding: !!(row.embedding && row.embedding.length > 0),
+      });
+    }
   }
 
-  query += ' ORDER BY created_at DESC LIMIT ? OFFSET ?';
-  params.push(limit, offset);
-
-  const rows = db.prepare(query).all(...params) as {
-    id: string;
-    key: string;
-    content: string;
-    type: string;
-    namespace: string;
-    tags: string;
-    created_at: number;
-    updated_at: number;
-  }[];
-
-  return rows.map((row) => ({
-    ...row,
-    tags: JSON.parse(row.tags || '[]'),
-  }));
+  return entries;
 }
 
 function getHTML(): string {
@@ -258,6 +367,7 @@ function getHTML(): string {
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>AgentKits Memory Viewer</title>
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0%25' y1='0%25' x2='100%25' y2='100%25'%3E%3Cstop offset='0%25' stop-color='%233B82F6'/%3E%3Cstop offset='100%25' stop-color='%238B5CF6'/%3E%3C/linearGradient%3E%3C/defs%3E%3Ccircle cx='12' cy='12' r='10' fill='url(%23g)'/%3E%3Cpath d='M10 14.17l-3.17-3.17-1.42 1.41L10 17l8-8-1.41-1.41z' fill='white'/%3E%3C/svg%3E">
   <style>
     :root {
       --bg-primary: #0F172A;
@@ -367,6 +477,202 @@ function getHTML(): string {
       width: 18px; height: 18px;
       fill: var(--text-muted);
     }
+
+    .search-type-select {
+      padding: 12px 16px;
+      background: var(--bg-secondary);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      color: var(--text-primary);
+      font-size: 14px;
+      cursor: pointer;
+      min-width: 180px;
+      transition: border-color 0.2s;
+    }
+
+    .search-type-select:focus {
+      outline: none;
+      border-color: var(--accent);
+    }
+
+    .search-type-select:hover { border-color: var(--accent); }
+
+    .score-badge {
+      font-size: 11px;
+      padding: 3px 8px;
+      background: linear-gradient(135deg, rgba(59, 130, 246, 0.2), rgba(139, 92, 246, 0.2));
+      color: var(--accent);
+      border-radius: 4px;
+      font-weight: 600;
+      white-space: nowrap;
+    }
+
+    .vector-badge {
+      display: inline-flex;
+      align-items: center;
+      font-size: 10px;
+      font-weight: 600;
+      padding: 2px 6px;
+      border-radius: 4px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    .vector-badge.has-vector {
+      background: rgba(34, 197, 94, 0.15);
+      color: #22C55E;
+    }
+
+    .vector-badge.no-vector {
+      background: rgba(100, 116, 139, 0.1);
+      color: var(--text-muted);
+    }
+
+    .embedding-stats {
+      display: flex;
+      gap: 16px;
+      margin-bottom: 20px;
+      padding: 16px;
+      background: var(--bg-card);
+      border-radius: 8px;
+    }
+
+    .embedding-stat {
+      text-align: center;
+      flex: 1;
+    }
+
+    .embedding-stat-value {
+      font-size: 24px;
+      font-weight: 700;
+      color: var(--text-primary);
+    }
+
+    .embedding-stat-label {
+      font-size: 12px;
+      color: var(--text-muted);
+      text-transform: uppercase;
+    }
+
+    .embedding-stat-value.success { color: var(--success); }
+    .embedding-stat-value.warning { color: var(--warning); }
+
+    .progress-bar {
+      height: 8px;
+      background: var(--bg-card);
+      border-radius: 4px;
+      overflow: hidden;
+      margin: 16px 0;
+    }
+
+    .progress-bar-fill {
+      height: 100%;
+      background: linear-gradient(90deg, var(--accent), #8B5CF6);
+      border-radius: 4px;
+      transition: width 0.3s ease;
+    }
+
+    .progress-text {
+      text-align: center;
+      font-size: 14px;
+      color: var(--text-secondary);
+      margin-top: 8px;
+    }
+
+    .btn-icon {
+      padding: 10px;
+      min-width: auto;
+    }
+
+    .embedding-section {
+      margin-top: 20px;
+      padding: 16px;
+      background: var(--bg-card);
+      border-radius: 8px;
+      border: 1px solid var(--border);
+    }
+
+    .embedding-header {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 12px;
+    }
+
+    .embedding-status {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 13px;
+      padding: 4px 10px;
+      border-radius: 6px;
+    }
+
+    .embedding-status.has-embedding {
+      background: rgba(34, 197, 94, 0.15);
+      color: #22C55E;
+    }
+
+    .embedding-status.no-embedding {
+      background: rgba(239, 68, 68, 0.15);
+      color: #EF4444;
+    }
+
+    .embedding-status svg {
+      width: 14px;
+      height: 14px;
+      fill: currentColor;
+    }
+
+    .embedding-dims {
+      font-size: 12px;
+      color: var(--text-muted);
+    }
+
+    .embedding-viz {
+      display: flex;
+      align-items: flex-end;
+      gap: 2px;
+      height: 40px;
+      margin-top: 12px;
+      padding: 8px;
+      background: var(--bg-primary);
+      border-radius: 6px;
+      overflow: hidden;
+    }
+
+    .embedding-bar {
+      flex: 1;
+      min-width: 4px;
+      border-radius: 2px 2px 0 0;
+      transition: height 0.3s ease;
+    }
+
+    .embedding-bar.positive { background: linear-gradient(to top, #3B82F6, #60A5FA); }
+    .embedding-bar.negative { background: linear-gradient(to top, #8B5CF6, #A78BFA); }
+
+    .embedding-legend {
+      display: flex;
+      justify-content: space-between;
+      margin-top: 8px;
+      font-size: 11px;
+      color: var(--text-muted);
+    }
+
+    .embedding-legend-item {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+
+    .legend-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+    }
+
+    .legend-dot.positive { background: #3B82F6; }
+    .legend-dot.negative { background: #8B5CF6; }
 
     .entries-list { display: flex; flex-direction: column; gap: 12px; }
 
@@ -676,6 +982,10 @@ function getHTML(): string {
           <svg viewBox="0 0 24 24"><path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>
           Add Memory
         </button>
+        <button class="btn" onclick="openEmbeddingModal()">
+          <svg viewBox="0 0 24 24"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg>
+          Embeddings
+        </button>
         <button class="btn" onclick="loadData()">
           <svg viewBox="0 0 24 24"><path d="M17.65 6.35C16.2 4.9 14.21 4 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08c-.82 2.33-3.04 4-5.65 4-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/></svg>
           Refresh
@@ -691,6 +1001,11 @@ function getHTML(): string {
         <svg viewBox="0 0 24 24"><path d="M15.5 14h-.79l-.28-.27C15.41 12.59 16 11.11 16 9.5 16 5.91 13.09 3 9.5 3S3 5.91 3 9.5 5.91 16 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></svg>
         <input type="text" id="search-input" placeholder="Search memories..." oninput="debounceSearch()">
       </div>
+      <select id="search-type" class="search-type-select" onchange="debounceSearch()">
+        <option value="hybrid">Hybrid (Text + Semantic)</option>
+        <option value="text">Text Only (FTS5)</option>
+        <option value="vector">Semantic Only (Vector)</option>
+      </select>
     </div>
 
     <div id="entries-container" class="entries-list">
@@ -785,6 +1100,57 @@ function getHTML(): string {
     </div>
   </div>
 
+  <!-- Embedding Management Modal -->
+  <div id="embedding-modal" class="modal-overlay" onclick="closeEmbeddingModal(event)">
+    <div class="modal" style="max-width: 500px;" onclick="event.stopPropagation()">
+      <div class="modal-header">
+        <span class="modal-title">Manage Embeddings</span>
+        <button class="modal-close" onclick="closeEmbeddingModal()">
+          <svg viewBox="0 0 24 24"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </div>
+      <div class="modal-body" id="embedding-modal-body">
+        <div class="embedding-stats" id="embedding-stats">
+          <div class="embedding-stat">
+            <div class="embedding-stat-value" id="stat-total">-</div>
+            <div class="embedding-stat-label">Total</div>
+          </div>
+          <div class="embedding-stat">
+            <div class="embedding-stat-value success" id="stat-with">-</div>
+            <div class="embedding-stat-label">With Embedding</div>
+          </div>
+          <div class="embedding-stat">
+            <div class="embedding-stat-value warning" id="stat-without">-</div>
+            <div class="embedding-stat-label">Without</div>
+          </div>
+        </div>
+        <p style="font-size: 14px; color: var(--text-secondary); margin-bottom: 12px;">
+          Vector embeddings enable semantic search - finding memories by meaning, not just keywords.
+        </p>
+        <p style="font-size: 12px; color: var(--text-muted); margin-bottom: 20px; padding: 10px; background: var(--bg-card); border-radius: 6px;">
+          <strong>Model:</strong> multilingual-e5-small (100+ languages, optimized for retrieval)
+        </p>
+        <div id="embedding-progress" style="display: none;">
+          <div class="progress-bar">
+            <div class="progress-bar-fill" id="progress-fill" style="width: 0%"></div>
+          </div>
+          <div class="progress-text" id="progress-text">Processing...</div>
+        </div>
+      </div>
+      <div class="modal-footer" id="embedding-modal-footer">
+        <button class="btn" onclick="closeEmbeddingModal()">Close</button>
+        <button class="btn btn-primary" id="btn-generate-missing" onclick="generateEmbeddings('missing')">
+          <svg viewBox="0 0 24 24" style="width:16px;height:16px;fill:currentColor"><path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>
+          Generate Missing
+        </button>
+        <button class="btn btn-success" id="btn-regenerate-all" onclick="generateEmbeddings('all')">
+          <svg viewBox="0 0 24 24" style="width:16px;height:16px;fill:currentColor"><path d="M17.65 6.35C16.2 4.9 14.21 4 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08c-.82 2.33-3.04 4-5.65 4-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/></svg>
+          Re-generate All
+        </button>
+      </div>
+    </div>
+  </div>
+
   <script>
     let currentNamespace = '';
     let currentSearch = '';
@@ -808,7 +1174,6 @@ function getHTML(): string {
 
     function renderStats() {
       const container = document.getElementById('stats-container');
-      const te = stats.tokenEconomics || { totalTokens: 0, avgTokensPerEntry: 0, estimatedSavings: 0 };
       container.innerHTML = \`
         <div class="stat-card">
           <div class="stat-label">Total Memories</div>
@@ -817,18 +1182,6 @@ function getHTML(): string {
         <div class="stat-card">
           <div class="stat-label">Namespaces</div>
           <div class="stat-value">\${Object.keys(stats.byNamespace || {}).length}</div>
-        </div>
-        <div class="stat-card">
-          <div class="stat-label">Total Tokens</div>
-          <div class="stat-value">\${(te.totalTokens || 0).toLocaleString()}</div>
-        </div>
-        <div class="stat-card">
-          <div class="stat-label">Avg Tokens/Entry</div>
-          <div class="stat-value">\${te.avgTokensPerEntry || 0}</div>
-        </div>
-        <div class="stat-card" style="background: linear-gradient(135deg, rgba(34, 197, 94, 0.2), rgba(16, 185, 129, 0.1));">
-          <div class="stat-label" style="color: #22C55E;">💰 Est. Tokens Saved</div>
-          <div class="stat-value" style="color: #22C55E;">\${(te.estimatedSavings || 0).toLocaleString()}</div>
         </div>
       \`;
     }
@@ -848,13 +1201,32 @@ function getHTML(): string {
       const container = document.getElementById('entries-container');
       container.innerHTML = '<div class="loading"><div class="spinner"></div></div>';
 
-      const params = new URLSearchParams({ limit: pageSize, offset: currentPage * pageSize });
-      if (currentNamespace) params.set('namespace', currentNamespace);
-      if (currentSearch) params.set('search', currentSearch);
-
       try {
-        const res = await fetch('/api/entries?' + params);
-        const entries = await res.json();
+        let entries;
+
+        if (currentSearch && currentSearch.trim()) {
+          // Use hybrid search endpoint when searching
+          const searchType = document.getElementById('search-type').value;
+          const params = new URLSearchParams({
+            q: currentSearch,
+            type: searchType,
+            limit: String(pageSize)
+          });
+          if (currentNamespace) params.set('namespace', currentNamespace);
+
+          const res = await fetch('/api/search?' + params);
+          entries = await res.json();
+        } else {
+          // Use standard entries endpoint for listing
+          const params = new URLSearchParams({
+            limit: String(pageSize),
+            offset: String(currentPage * pageSize)
+          });
+          if (currentNamespace) params.set('namespace', currentNamespace);
+
+          const res = await fetch('/api/entries?' + params);
+          entries = await res.json();
+        }
 
         if (!Array.isArray(entries) || entries.length === 0) {
           container.innerHTML = \`
@@ -869,6 +1241,11 @@ function getHTML(): string {
             <div class="entry-card" onclick="showDetail('\${entry.id}')">
               <div class="entry-header">
                 <span class="entry-key">\${escapeHtml(entry.key)}</span>
+                \${entry.hasEmbedding ?
+                  \`<span class="vector-badge has-vector" title="Vector embedding enabled for semantic search">Vec</span>\` :
+                  \`<span class="vector-badge no-vector" title="No vector embedding">--</span>\`
+                }
+                \${entry.score !== undefined ? \`<span class="score-badge">\${(entry.score * 100).toFixed(1)}%</span>\` : ''}
                 <span class="entry-namespace">\${entry.namespace}</span>
               </div>
               <div class="entry-content truncated">\${escapeHtml(entry.content)}</div>
@@ -918,6 +1295,59 @@ function getHTML(): string {
     function prevPage() { if (currentPage > 0) { currentPage--; loadEntries(); } }
     function nextPage() { currentPage++; loadEntries(); }
 
+    function renderEmbeddingViz(embedding) {
+      if (!embedding || !embedding.hasEmbedding) {
+        return \`
+          <div class="embedding-section">
+            <div class="embedding-header">
+              <span class="embedding-status no-embedding">
+                <svg viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/></svg>
+                No Embedding
+              </span>
+            </div>
+            <p style="font-size: 12px; color: var(--text-muted); margin: 0;">
+              This entry doesn't have a vector embedding. Edit and save to generate one.
+            </p>
+          </div>
+        \`;
+      }
+
+      const preview = embedding.preview || [];
+      const maxVal = Math.max(...preview.map(Math.abs), 0.001);
+
+      const bars = preview.map(val => {
+        const height = Math.abs(val) / maxVal * 100;
+        const isPositive = val >= 0;
+        return \`<div class="embedding-bar \${isPositive ? 'positive' : 'negative'}" style="height: \${height}%" title="\${val.toFixed(4)}"></div>\`;
+      }).join('');
+
+      return \`
+        <div class="embedding-section">
+          <div class="embedding-header">
+            <span class="embedding-status has-embedding">
+              <svg viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/></svg>
+              Vector Enabled
+            </span>
+            <span class="embedding-dims">\${embedding.dimensions}D</span>
+          </div>
+          <div class="embedding-viz">
+            \${bars}
+          </div>
+          <div class="embedding-legend">
+            <div class="embedding-legend-item">
+              <span class="legend-dot positive"></span>
+              Positive values
+            </div>
+            <div class="embedding-legend-item">
+              <span class="legend-dot negative"></span>
+              Negative values
+            </div>
+            <span>First 20 dimensions</span>
+          </div>
+        </div>
+      \`;
+    }
+
     async function showDetail(id) {
       try {
         const res = await fetch('/api/entry/' + id);
@@ -948,6 +1378,7 @@ function getHTML(): string {
             <div class="detail-label">Created</div>
             <div class="detail-value">\${new Date(entry.created_at).toLocaleString()}</div>
           </div>
+          \${renderEmbeddingViz(entry.embedding)}
           <div class="detail-actions">
             <button class="btn btn-primary" onclick="openEditModal('\${entry.id}')">
               <svg viewBox="0 0 24 24"><path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04c.39-.39.39-1.02 0-1.41l-2.34-2.34c-.39-.39-1.02-.39-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/></svg>
@@ -1069,6 +1500,85 @@ function getHTML(): string {
       }
     }
 
+    async function openEmbeddingModal() {
+      document.getElementById('embedding-modal').classList.add('active');
+      document.getElementById('embedding-progress').style.display = 'none';
+      document.getElementById('embedding-modal-footer').style.display = 'flex';
+
+      // Load embedding stats
+      try {
+        const res = await fetch('/api/embeddings/stats');
+        const embeddingStats = await res.json();
+        document.getElementById('stat-total').textContent = embeddingStats.total;
+        document.getElementById('stat-with').textContent = embeddingStats.withEmbedding;
+        document.getElementById('stat-without').textContent = embeddingStats.withoutEmbedding;
+
+        // Disable buttons if nothing to do
+        document.getElementById('btn-generate-missing').disabled = embeddingStats.withoutEmbedding === 0;
+        document.getElementById('btn-regenerate-all').disabled = embeddingStats.total === 0;
+      } catch (error) {
+        console.error('Failed to load embedding stats:', error);
+      }
+    }
+
+    function closeEmbeddingModal(event) {
+      if (!event || event.target.id === 'embedding-modal') {
+        document.getElementById('embedding-modal').classList.remove('active');
+      }
+    }
+
+    async function generateEmbeddings(mode) {
+      const progressEl = document.getElementById('embedding-progress');
+      const progressFill = document.getElementById('progress-fill');
+      const progressText = document.getElementById('progress-text');
+      const footerEl = document.getElementById('embedding-modal-footer');
+
+      // Show progress, hide buttons
+      progressEl.style.display = 'block';
+      footerEl.style.display = 'none';
+      progressFill.style.width = '0%';
+      progressText.textContent = mode === 'missing' ? 'Generating missing embeddings...' : 'Re-generating all embeddings...';
+
+      // Animate progress bar while waiting
+      let progress = 0;
+      const interval = setInterval(() => {
+        progress += Math.random() * 10;
+        if (progress > 90) progress = 90;
+        progressFill.style.width = progress + '%';
+      }, 200);
+
+      try {
+        const res = await fetch('/api/embeddings/generate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ mode }),
+        });
+
+        clearInterval(interval);
+        progressFill.style.width = '100%';
+
+        const result = await res.json();
+        progressText.textContent = result.message || 'Done!';
+
+        setTimeout(() => {
+          showToast(result.message || 'Embeddings generated', 'success');
+          closeEmbeddingModal();
+          loadData();
+        }, 1000);
+      } catch (error) {
+        clearInterval(interval);
+        progressFill.style.width = '0%';
+        progressText.textContent = 'Failed to generate embeddings';
+        showToast('Failed to generate embeddings', 'error');
+
+        // Re-show buttons after error
+        setTimeout(() => {
+          progressEl.style.display = 'none';
+          footerEl.style.display = 'flex';
+        }, 2000);
+      }
+    }
+
     function showToast(message, type = 'success') {
       const toast = document.createElement('div');
       toast.className = 'toast ' + type;
@@ -1103,6 +1613,7 @@ function getHTML(): string {
         closeDetailModal();
         closeFormModal();
         closeDeleteModal();
+        closeEmbeddingModal();
       }
     });
 
@@ -1149,7 +1660,7 @@ function handleRequest(
       return;
     }
 
-    // GET entries
+    // GET entries (standard listing with optional FTS search)
     if (url.pathname === '/api/entries' && method === 'GET') {
       const namespace = url.searchParams.get('namespace') || undefined;
       const limit = parseInt(url.searchParams.get('limit') || '50', 10);
@@ -1162,32 +1673,64 @@ function handleRequest(
       return;
     }
 
-    // POST create entry
+    // GET hybrid search (new endpoint with vector support)
+    if (url.pathname === '/api/search' && method === 'GET') {
+      const query = url.searchParams.get('q') || '';
+      const searchType = (url.searchParams.get('type') || 'hybrid') as 'hybrid' | 'text' | 'vector';
+      const limit = parseInt(url.searchParams.get('limit') || '20', 10);
+      const namespace = url.searchParams.get('namespace') || undefined;
+
+      getSearchEngine()
+        .then((searchEngine) => searchEntries(searchEngine, query, { type: searchType, namespace, limit }))
+        .then((results) => {
+          res.writeHead(200);
+          res.end(JSON.stringify(results));
+        })
+        .catch((error) => {
+          res.writeHead(500);
+          res.end(JSON.stringify({ error: error instanceof Error ? error.message : 'Search failed' }));
+        });
+      return;
+    }
+
+    // POST create entry (direct DB for compatibility with existing schema)
     if (url.pathname === '/api/entries' && method === 'POST') {
-      readBody(req).then((body) => {
-        const data = JSON.parse(body);
-        const now = Date.now();
-        const id = generateId();
-        const tags = JSON.stringify(data.tags || []);
+      readBody(req)
+        .then(async (body) => {
+          const data = JSON.parse(body) as {
+            key: string;
+            content: string;
+            type?: string;
+            namespace?: string;
+            tags?: string[];
+          };
 
-        db.prepare(
-          `INSERT INTO memory_entries (id, key, content, type, namespace, tags, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
-        ).run(id, data.key, data.content, data.type || 'semantic', data.namespace || 'general', tags, now, now);
+          const now = Date.now();
+          const id = `mem_${now}_${Math.random().toString(36).slice(2, 10)}`;
+          const tags = JSON.stringify(data.tags || []);
 
-        // Also insert into FTS table
-        try {
+          // Generate embedding for the content
+          let embeddingBuffer: Buffer | null = null;
+          try {
+            const embeddingsService = await getEmbeddingsService();
+            const result = await embeddingsService.embed(data.content);
+            embeddingBuffer = Buffer.from(result.embedding.buffer);
+          } catch (e) {
+            console.warn('[WebViewer] Failed to generate embedding:', e);
+          }
+
           db.prepare(
-            `INSERT INTO memory_fts (id, key, content, tags) VALUES (?, ?, ?, ?)`
-          ).run(id, data.key, data.content, tags);
-        } catch { /* FTS may not be available */ }
+            `INSERT INTO memory_entries (id, key, content, type, namespace, tags, embedding, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+          ).run(id, data.key, data.content, data.type || 'semantic', data.namespace || 'general', tags, embeddingBuffer, now, now);
 
-        res.writeHead(201);
-        res.end(JSON.stringify({ id, success: true }));
-      }).catch((error) => {
-        res.writeHead(500);
-        res.end(JSON.stringify({ error: error instanceof Error ? error.message : 'Internal error' }));
-      });
+          res.writeHead(201);
+          res.end(JSON.stringify({ id, success: true }));
+        })
+        .catch((error) => {
+          res.writeHead(500);
+          res.end(JSON.stringify({ error: error instanceof Error ? error.message : 'Internal error' }));
+        });
       return;
     }
 
@@ -1201,11 +1744,33 @@ function handleRequest(
         type: string;
         namespace: string;
         tags: string;
+        embedding: Buffer | null;
         created_at: number;
         updated_at: number;
       } | undefined;
 
       if (row) {
+        // Extract embedding info for visualization
+        let embeddingInfo: { hasEmbedding: boolean; dimensions?: number; preview?: number[] } = {
+          hasEmbedding: false,
+        };
+
+        if (row.embedding && row.embedding.length > 0) {
+          const embedding = new Float32Array(
+            row.embedding.buffer.slice(
+              row.embedding.byteOffset,
+              row.embedding.byteOffset + row.embedding.byteLength
+            )
+          );
+          // Get first 20 values for preview visualization
+          const preview = Array.from(embedding.slice(0, 20));
+          embeddingInfo = {
+            hasEmbedding: true,
+            dimensions: embedding.length,
+            preview,
+          };
+        }
+
         res.writeHead(200);
         res.end(JSON.stringify({
           id: row.id,
@@ -1216,6 +1781,7 @@ function handleRequest(
           tags: JSON.parse(row.tags || '[]'),
           created_at: row.created_at,
           updated_at: row.updated_at,
+          embedding: embeddingInfo,
         }));
       } else {
         res.writeHead(404);
@@ -1224,45 +1790,142 @@ function handleRequest(
       return;
     }
 
-    // PUT update entry
+    // PUT update entry (direct DB for full field updates)
     if (url.pathname.startsWith('/api/entry/') && method === 'PUT') {
       const id = url.pathname.split('/').pop();
-      readBody(req).then((body) => {
-        const data = JSON.parse(body);
-        const now = Date.now();
-        const tags = JSON.stringify(data.tags || []);
+      if (!id) {
+        res.writeHead(400);
+        res.end(JSON.stringify({ error: 'Missing entry ID' }));
+        return;
+      }
 
-        db.prepare(
-          `UPDATE memory_entries SET key = ?, content = ?, type = ?, namespace = ?, tags = ?, updated_at = ?
-           WHERE id = ?`
-        ).run(data.key, data.content, data.type, data.namespace, tags, now, id);
+      readBody(req)
+        .then(async (body) => {
+          const data = JSON.parse(body) as {
+            key: string;
+            content: string;
+            type: string;
+            namespace: string;
+            tags?: string[];
+          };
+          const now = Date.now();
+          const tags = JSON.stringify(data.tags || []);
 
-        // Also update FTS table
-        try {
-          db.prepare(`DELETE FROM memory_fts WHERE id = ?`).run(id);
-          db.prepare(
-            `INSERT INTO memory_fts (id, key, content, tags) VALUES (?, ?, ?, ?)`
-          ).run(id, data.key, data.content, tags);
-        } catch { /* FTS may not be available */ }
+          // Generate embedding for the updated content
+          let embeddingBuffer: Buffer | null = null;
+          try {
+            const embeddingsService = await getEmbeddingsService();
+            const result = await embeddingsService.embed(data.content);
+            embeddingBuffer = Buffer.from(result.embedding.buffer);
+          } catch (e) {
+            console.warn('[WebViewer] Failed to generate embedding:', e);
+          }
 
-        res.writeHead(200);
-        res.end(JSON.stringify({ success: true }));
-      }).catch((error) => {
-        res.writeHead(500);
-        res.end(JSON.stringify({ error: error instanceof Error ? error.message : 'Internal error' }));
-      });
+          // Update with embedding
+          const result = db.prepare(
+            `UPDATE memory_entries SET key = ?, content = ?, type = ?, namespace = ?, tags = ?, embedding = ?, updated_at = ?
+             WHERE id = ?`
+          ).run(data.key, data.content, data.type, data.namespace, tags, embeddingBuffer, now, id);
+
+          if (result.changes > 0) {
+            res.writeHead(200);
+            res.end(JSON.stringify({ success: true }));
+          } else {
+            res.writeHead(404);
+            res.end(JSON.stringify({ error: 'Entry not found' }));
+          }
+        })
+        .catch((error) => {
+          res.writeHead(500);
+          res.end(JSON.stringify({ error: error instanceof Error ? error.message : 'Internal error' }));
+        });
       return;
     }
 
-    // DELETE entry
+    // DELETE entry (direct DB for compatibility)
     if (url.pathname.startsWith('/api/entry/') && method === 'DELETE') {
       const id = url.pathname.split('/').pop();
-      db.prepare('DELETE FROM memory_entries WHERE id = ?').run(id);
-      try {
-        db.prepare('DELETE FROM memory_fts WHERE id = ?').run(id);
-      } catch { /* FTS may not be available */ }
+      if (!id) {
+        res.writeHead(400);
+        res.end(JSON.stringify({ error: 'Missing entry ID' }));
+        return;
+      }
+
+      const result = db.prepare('DELETE FROM memory_entries WHERE id = ?').run(id);
+      if (result.changes > 0) {
+        res.writeHead(200);
+        res.end(JSON.stringify({ success: true }));
+      } else {
+        res.writeHead(404);
+        res.end(JSON.stringify({ error: 'Entry not found' }));
+      }
+      return;
+    }
+
+    // GET embedding stats
+    if (url.pathname === '/api/embeddings/stats' && method === 'GET') {
+      const totalRow = db.prepare('SELECT COUNT(*) as count FROM memory_entries').get() as { count: number };
+      const withEmbeddingRow = db.prepare('SELECT COUNT(*) as count FROM memory_entries WHERE embedding IS NOT NULL AND LENGTH(embedding) > 0').get() as { count: number };
+
       res.writeHead(200);
-      res.end(JSON.stringify({ success: true }));
+      res.end(JSON.stringify({
+        total: totalRow?.count || 0,
+        withEmbedding: withEmbeddingRow?.count || 0,
+        withoutEmbedding: (totalRow?.count || 0) - (withEmbeddingRow?.count || 0),
+      }));
+      return;
+    }
+
+    // POST batch generate embeddings
+    if (url.pathname === '/api/embeddings/generate' && method === 'POST') {
+      readBody(req)
+        .then(async (body) => {
+          const options = JSON.parse(body || '{}') as { mode?: 'missing' | 'all' };
+          const mode = options.mode || 'missing';
+
+          // Get entries to process
+          const query = mode === 'missing'
+            ? 'SELECT id, content FROM memory_entries WHERE embedding IS NULL OR LENGTH(embedding) = 0'
+            : 'SELECT id, content FROM memory_entries';
+
+          const entries = db.prepare(query).all() as { id: string; content: string }[];
+
+          if (entries.length === 0) {
+            res.writeHead(200);
+            res.end(JSON.stringify({ processed: 0, success: 0, failed: 0, message: 'No entries to process' }));
+            return;
+          }
+
+          const embeddingsService = await getEmbeddingsService();
+          let success = 0;
+          let failed = 0;
+
+          const updateStmt = db.prepare('UPDATE memory_entries SET embedding = ?, updated_at = ? WHERE id = ?');
+
+          for (const entry of entries) {
+            try {
+              const result = await embeddingsService.embed(entry.content);
+              const embeddingBuffer = Buffer.from(result.embedding.buffer);
+              updateStmt.run(embeddingBuffer, Date.now(), entry.id);
+              success++;
+            } catch (e) {
+              console.warn(`[WebViewer] Failed to generate embedding for ${entry.id}:`, e);
+              failed++;
+            }
+          }
+
+          res.writeHead(200);
+          res.end(JSON.stringify({
+            processed: entries.length,
+            success,
+            failed,
+            message: `Generated embeddings for ${success} entries${failed > 0 ? `, ${failed} failed` : ''}`,
+          }));
+        })
+        .catch((error) => {
+          res.writeHead(500);
+          res.end(JSON.stringify({ error: error instanceof Error ? error.message : 'Internal error' }));
+        });
       return;
     }
 

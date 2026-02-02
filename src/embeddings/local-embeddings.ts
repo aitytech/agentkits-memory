@@ -21,10 +21,15 @@ export interface LocalEmbeddingsConfig {
   /** Provider to use (default: 'transformers') */
   provider?: EmbeddingProvider;
 
-  /** Model ID for Transformers.js (default: 'Xenova/all-MiniLM-L6-v2') */
+  /**
+   * Model ID for Transformers.js
+   * Default: 'Xenova/multilingual-e5-small' (100+ languages, optimized for retrieval)
+   * Alternative: 'Xenova/paraphrase-multilingual-MiniLM-L12-v2' (50+ languages)
+   * Alternative: 'Xenova/all-MiniLM-L6-v2' (English only, faster)
+   */
   modelId?: string;
 
-  /** Vector dimensions (default: 384 for all-MiniLM-L6-v2) */
+  /** Vector dimensions (default: 384) */
   dimensions?: number;
 
   /** Enable in-memory cache for repeated texts */
@@ -191,7 +196,8 @@ export class LocalEmbeddingsService {
   constructor(config: LocalEmbeddingsConfig = {}) {
     this.config = {
       provider: config.provider || 'transformers',
-      modelId: config.modelId || 'Xenova/all-MiniLM-L6-v2',
+      // Use multilingual-e5-small for best CJK support and retrieval accuracy
+      modelId: config.modelId || 'Xenova/multilingual-e5-small',
       dimensions: config.dimensions || 384,
       cacheEnabled: config.cacheEnabled ?? true,
       maxCacheSize: config.maxCacheSize || 1000,

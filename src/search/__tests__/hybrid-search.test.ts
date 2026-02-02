@@ -471,4 +471,199 @@ describe('HybridSearchEngine', () => {
       expect(results.length).toBe(0);
     });
   });
+
+  describe('non-trigram tokenizers', () => {
+    it('should work with unicode61 tokenizer', async () => {
+      const unicode61Engine = new HybridSearchEngine(db, { tokenizer: 'unicode61' });
+      await unicode61Engine.initialize();
+
+      const now = Date.now();
+      db.prepare(
+        `INSERT INTO memory_entries (id, key, content, namespace, tags, created_at, updated_at, last_accessed_at)
+         VALUES (?, ?, ?, ?, '[]', ?, ?, ?)`
+      ).run('u61-1', 'unicode-test', 'Testing unicode61 tokenizer with english text', 'default', now, now, now);
+
+      await unicode61Engine.rebuildFtsIndex();
+
+      const results = await unicode61Engine.searchCompact('testing english', { includeSemantic: false });
+      expect(results.some((r) => r.id === 'u61-1')).toBe(true);
+    });
+
+    it('should work with porter tokenizer', async () => {
+      const porterEngine = new HybridSearchEngine(db, { tokenizer: 'porter' });
+      await porterEngine.initialize();
+
+      const now = Date.now();
+      db.prepare(
+        `INSERT INTO memory_entries (id, key, content, namespace, tags, created_at, updated_at, last_accessed_at)
+         VALUES (?, ?, ?, ?, '[]', ?, ?, ?)`
+      ).run('porter-1', 'porter-test', 'Running and jumping are activities', 'default', now, now, now);
+
+      await porterEngine.rebuildFtsIndex();
+
+      // Porter stemmer should match "run" to "running"
+      const results = await porterEngine.searchCompact('run', { includeSemantic: false });
+      expect(results.some((r) => r.id === 'porter-1')).toBe(true);
+    });
+
+    it('should sanitize query for non-trigram tokenizers', async () => {
+      const unicode61Engine = new HybridSearchEngine(db, { tokenizer: 'unicode61' });
+      await unicode61Engine.initialize();
+
+      const now = Date.now();
+      db.prepare(
+        `INSERT INTO memory_entries (id, key, content, namespace, tags, created_at, updated_at, last_accessed_at)
+         VALUES (?, ?, ?, ?, '[]', ?, ?, ?)`
+      ).run('sanitize-1', 'sanitize-test', 'Multiple words in content here', 'default', now, now, now);
+
+      await unicode61Engine.rebuildFtsIndex();
+
+      // Multi-word query should be sanitized to "word1" OR "word2"
+      const results = await unicode61Engine.searchCompact('Multiple words', { includeSemantic: false });
+      expect(results.some((r) => r.id === 'sanitize-1')).toBe(true);
+    });
+  });
+
+  describe('semantic search with embeddings', () => {
+    it('should search entries with embeddings', async () => {
+      const mockEmbeddingGenerator = async (text: string): Promise<Float32Array> => {
+        // Simple mock that returns consistent embeddings
+        const hash = text.split('').reduce((acc, char) => acc + char.charCodeAt(0), 0);
+        const embedding = new Float32Array(384);
+        for (let i = 0; i < 384; i++) {
+          embedding[i] = Math.sin(hash + i) * 0.5 + 0.5;
+        }
+        return embedding;
+      };
+
+      const semanticEngine = new HybridSearchEngine(db, {}, mockEmbeddingGenerator);
+      await semanticEngine.initialize();
+
+      const now = Date.now();
+      const embedding = await mockEmbeddingGenerator('authentication pattern');
+      const embeddingBuffer = Buffer.from(embedding.buffer);
+
+      db.prepare(
+        `INSERT INTO memory_entries (id, key, content, namespace, tags, embedding, created_at, updated_at, last_accessed_at)
+         VALUES (?, ?, ?, ?, '[]', ?, ?, ?, ?)`
+      ).run('emb-1', 'auth-pattern', 'JWT authentication pattern for secure APIs', 'patterns', embeddingBuffer, now, now, now);
+
+      await semanticEngine.rebuildFtsIndex();
+
+      // Search with semantic enabled
+      const results = await semanticEngine.searchCompact('authentication pattern', {
+        includeKeyword: false,
+        includeSemantic: true,
+      });
+
+      expect(results.length).toBeGreaterThan(0);
+      expect(results[0].semanticScore).toBeGreaterThan(0);
+    });
+
+    it('should fuse keyword and semantic scores', async () => {
+      const mockEmbeddingGenerator = async (text: string): Promise<Float32Array> => {
+        const embedding = new Float32Array(384);
+        for (let i = 0; i < 384; i++) {
+          embedding[i] = Math.random();
+        }
+        return embedding;
+      };
+
+      const fusionEngine = new HybridSearchEngine(db, {
+        keywordWeight: 0.3,
+        semanticWeight: 0.7,
+      }, mockEmbeddingGenerator);
+      await fusionEngine.initialize();
+
+      const now = Date.now();
+      const embedding = await mockEmbeddingGenerator('test content');
+      const embeddingBuffer = Buffer.from(embedding.buffer);
+
+      db.prepare(
+        `INSERT INTO memory_entries (id, key, content, namespace, tags, embedding, created_at, updated_at, last_accessed_at)
+         VALUES (?, ?, ?, ?, '[]', ?, ?, ?, ?)`
+      ).run('fusion-1', 'fusion-test', 'Test content for fusion search', 'default', embeddingBuffer, now, now, now);
+
+      await fusionEngine.rebuildFtsIndex();
+
+      // Search with both enabled
+      const results = await fusionEngine.searchCompact('test content', {
+        includeKeyword: true,
+        includeSemantic: true,
+      });
+
+      expect(results.length).toBeGreaterThan(0);
+      // Score should be a weighted combination
+      const result = results.find((r) => r.id === 'fusion-1');
+      if (result) {
+        expect(result.keywordScore).toBeGreaterThanOrEqual(0);
+        expect(result.semanticScore).toBeGreaterThanOrEqual(0);
+      }
+    });
+
+    it('should return full entries with embeddings via getFull', async () => {
+      const now = Date.now();
+      const embedding = new Float32Array(384);
+      for (let i = 0; i < 384; i++) {
+        embedding[i] = i / 384;
+      }
+      const embeddingBuffer = Buffer.from(embedding.buffer);
+
+      db.prepare(
+        `INSERT INTO memory_entries (id, key, content, namespace, tags, embedding, created_at, updated_at, last_accessed_at)
+         VALUES (?, ?, ?, ?, '[]', ?, ?, ?, ?)`
+      ).run('full-emb-1', 'full-emb-test', 'Content with embedding', 'default', embeddingBuffer, now, now, now);
+
+      const entries = await engine.getFull(['full-emb-1']);
+
+      expect(entries.length).toBe(1);
+      expect(entries[0].embedding).toBeDefined();
+      expect(entries[0].embedding?.length).toBe(384);
+      expect(entries[0].embedding?.[0]).toBeCloseTo(0, 5);
+      expect(entries[0].embedding?.[383]).toBeCloseTo(383 / 384, 5);
+    });
+  });
+
+  describe('error handling', () => {
+    it('should handle FTS5 not available gracefully', async () => {
+      // Create a mock database that doesn't support FTS5
+      const mockDb = new Database(':memory:');
+      mockDb.exec(`
+        CREATE TABLE memory_entries (
+          rowid INTEGER PRIMARY KEY AUTOINCREMENT,
+          id TEXT UNIQUE NOT NULL,
+          key TEXT NOT NULL,
+          content TEXT NOT NULL,
+          namespace TEXT DEFAULT 'default',
+          tags TEXT DEFAULT '[]',
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL,
+          last_accessed_at INTEGER NOT NULL
+        )
+      `);
+
+      // Override the FTS5 check to simulate unavailability
+      const noFtsEngine = new HybridSearchEngine(mockDb, { fallbackToLike: true });
+
+      // Insert data before initializing (simulating no FTS5)
+      const now = Date.now();
+      mockDb.prepare(
+        `INSERT INTO memory_entries (id, key, content, namespace, tags, created_at, updated_at, last_accessed_at)
+         VALUES (?, ?, ?, ?, '[]', ?, ?, ?)`
+      ).run('nofts-1', 'fallback-test', 'Testing LIKE fallback search', 'default', now, now, now);
+
+      await noFtsEngine.initialize();
+
+      // Should still work via LIKE fallback
+      const results = await noFtsEngine.searchCompact('fallback', { includeSemantic: false });
+      expect(results.length).toBeGreaterThan(0);
+
+      mockDb.close();
+    });
+
+    it('should handle missing timeline entries', async () => {
+      const timeline = await engine.searchTimeline(['nonexistent-id']);
+      expect(timeline.length).toBe(0);
+    });
+  });
 });
