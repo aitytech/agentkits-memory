@@ -18,6 +18,15 @@ import { createSummarizeHook } from '../summarize.js';
 
 const TEST_DIR = path.join(process.cwd(), '.test-integration-hooks');
 
+// Track hooks for cleanup (needed for Windows file locking)
+let activeHooks: Array<{ shutdown: () => Promise<void> }> = [];
+
+// Helper to track hooks for cleanup
+function trackHook<T extends { shutdown: () => Promise<void> }>(hook: T): T {
+  activeHooks.push(hook);
+  return hook;
+}
+
 function createTestInput(overrides: Partial<NormalizedHookInput> = {}): NormalizedHookInput {
   return {
     sessionId: 'integration-session',
@@ -30,17 +39,39 @@ function createTestInput(overrides: Partial<NormalizedHookInput> = {}): Normaliz
 
 describe('Hook System Integration', () => {
   beforeEach(() => {
+    activeHooks = [];
     // Clean up test directory
     if (existsSync(TEST_DIR)) {
-      rmSync(TEST_DIR, { recursive: true });
+      try {
+        rmSync(TEST_DIR, { recursive: true });
+      } catch {
+        // Ignore errors on Windows
+      }
     }
     mkdirSync(TEST_DIR, { recursive: true });
   });
 
-  afterEach(() => {
+  afterEach(async () => {
+    // Shutdown all hooks first (releases database locks)
+    for (const hook of activeHooks) {
+      try {
+        await hook.shutdown();
+      } catch {
+        // Ignore shutdown errors
+      }
+    }
+    activeHooks = [];
+
+    // Small delay for Windows file system
+    await new Promise((r) => setTimeout(r, 100));
+
     // Clean up test directory
     if (existsSync(TEST_DIR)) {
-      rmSync(TEST_DIR, { recursive: true });
+      try {
+        rmSync(TEST_DIR, { recursive: true });
+      } catch {
+        // Ignore errors on Windows - files may still be locked
+      }
     }
   });
 
@@ -50,24 +81,26 @@ describe('Hook System Integration', () => {
       const project = 'test-project';
 
       // 1. Session Start - Context Hook (no previous context)
-      const contextHook = createContextHook(TEST_DIR);
+      const contextHook = trackHook(createContextHook(TEST_DIR));
       const contextResult = await contextHook.execute(
         createTestInput({ sessionId, project })
       );
 
       expect(contextResult.continue).toBe(true);
       expect(contextResult.additionalContext).toBeUndefined(); // No previous sessions
+      await contextHook.shutdown();
 
       // 2. User Prompt Submit - Session Init Hook
-      const sessionInitHook = createSessionInitHook(TEST_DIR);
+      const sessionInitHook = trackHook(createSessionInitHook(TEST_DIR));
       const sessionInitResult = await sessionInitHook.execute(
         createTestInput({ sessionId, project, prompt: 'Help me implement a feature' })
       );
 
       expect(sessionInitResult.continue).toBe(true);
+      await sessionInitHook.shutdown();
 
       // 3. Tool Uses - Observation Hooks
-      const observationHook = createObservationHook(TEST_DIR);
+      const observationHook = trackHook(createObservationHook(TEST_DIR));
 
       // Simulate reading files
       await observationHook.execute(
@@ -112,9 +145,10 @@ describe('Hook System Integration', () => {
           toolResponse: { stdout: 'All tests passed' },
         })
       );
+      await observationHook.shutdown();
 
       // 4. Session End - Summarize Hook
-      const summarizeHook = createSummarizeHook(TEST_DIR);
+      const summarizeHook = trackHook(createSummarizeHook(TEST_DIR));
       const summarizeResult = await summarizeHook.execute(
         createTestInput({ sessionId, project, stopReason: 'user_exit' })
       );
@@ -146,11 +180,12 @@ describe('Hook System Integration', () => {
       const project = 'test-project';
 
       // Init session 1
-      const initHook1 = createSessionInitHook(TEST_DIR);
+      const initHook1 = trackHook(createSessionInitHook(TEST_DIR));
       await initHook1.execute(createTestInput({ sessionId: session1Id, project, prompt: 'First task' }));
+      await initHook1.shutdown();
 
       // Add observations to session 1
-      const obsHook1 = createObservationHook(TEST_DIR);
+      const obsHook1 = trackHook(createObservationHook(TEST_DIR));
       await obsHook1.execute(createTestInput({
         sessionId: session1Id,
         project,
@@ -158,15 +193,16 @@ describe('Hook System Integration', () => {
         toolInput: { file_path: 'src/auth.ts' },
         toolResponse: {},
       }));
+      await obsHook1.shutdown();
 
       // Complete session 1
-      const sumHook1 = createSummarizeHook(TEST_DIR);
+      const sumHook1 = trackHook(createSummarizeHook(TEST_DIR));
       await sumHook1.execute(createTestInput({ sessionId: session1Id, project }));
 
       // Session 2: Should see context from session 1
       const session2Id = 'current-session';
 
-      const contextHook2 = createContextHook(TEST_DIR);
+      const contextHook2 = trackHook(createContextHook(TEST_DIR));
       const contextResult = await contextHook2.execute(
         createTestInput({ sessionId: session2Id, project })
       );
@@ -181,14 +217,15 @@ describe('Hook System Integration', () => {
 
     it('should handle multiple projects independently', async () => {
       // Session for project A
-      const initHookA = createSessionInitHook(TEST_DIR);
+      const initHookA = trackHook(createSessionInitHook(TEST_DIR));
       await initHookA.execute(createTestInput({
         sessionId: 'session-a',
         project: 'project-a',
         prompt: 'Task for A',
       }));
+      await initHookA.shutdown();
 
-      const obsHookA = createObservationHook(TEST_DIR);
+      const obsHookA = trackHook(createObservationHook(TEST_DIR));
       await obsHookA.execute(createTestInput({
         sessionId: 'session-a',
         project: 'project-a',
@@ -196,16 +233,18 @@ describe('Hook System Integration', () => {
         toolInput: { file_path: 'a.ts' },
         toolResponse: {},
       }));
+      await obsHookA.shutdown();
 
       // Session for project B
-      const initHookB = createSessionInitHook(TEST_DIR);
+      const initHookB = trackHook(createSessionInitHook(TEST_DIR));
       await initHookB.execute(createTestInput({
         sessionId: 'session-b',
         project: 'project-b',
         prompt: 'Task for B',
       }));
+      await initHookB.shutdown();
 
-      const obsHookB = createObservationHook(TEST_DIR);
+      const obsHookB = trackHook(createObservationHook(TEST_DIR));
       await obsHookB.execute(createTestInput({
         sessionId: 'session-b',
         project: 'project-b',
@@ -213,6 +252,7 @@ describe('Hook System Integration', () => {
         toolInput: { file_path: 'b.ts' },
         toolResponse: {},
       }));
+      await obsHookB.shutdown();
 
       // Verify isolation
       const service = new MemoryHookService(TEST_DIR);
@@ -260,10 +300,11 @@ describe('Hook System Integration', () => {
       expect(parsed.toolResponse).toEqual({ content: 'file contents here' });
 
       // Process through observation hook
-      const observationHook = createObservationHook(TEST_DIR);
+      const observationHook = trackHook(createObservationHook(TEST_DIR));
       const result = await observationHook.execute(parsed);
 
       expect(result.continue).toBe(true);
+      await observationHook.shutdown();
 
       // Verify stored
       const service = new MemoryHookService(TEST_DIR);
@@ -282,11 +323,12 @@ describe('Hook System Integration', () => {
       const project = 'test-project';
 
       // Init session
-      const initHook = createSessionInitHook(TEST_DIR);
+      const initHook = trackHook(createSessionInitHook(TEST_DIR));
       await initHook.execute(createTestInput({ sessionId, project }));
+      await initHook.shutdown();
 
       // Successful observation
-      const obsHook = createObservationHook(TEST_DIR);
+      const obsHook = trackHook(createObservationHook(TEST_DIR));
       await obsHook.execute(createTestInput({
         sessionId,
         project,
@@ -303,6 +345,7 @@ describe('Hook System Integration', () => {
         toolInput: {},
         toolResponse: {},
       }));
+      await obsHook.shutdown();
 
       // Verify both observations stored
       const service = new MemoryHookService(TEST_DIR);
@@ -319,14 +362,16 @@ describe('Hook System Integration', () => {
       const project = 'test-project';
 
       // Start two sessions sequentially (SQLite doesn't handle concurrent writes well)
-      const initHook1 = createSessionInitHook(TEST_DIR);
+      const initHook1 = trackHook(createSessionInitHook(TEST_DIR));
       await initHook1.execute(createTestInput({ sessionId: 'multi-1', project }));
+      await initHook1.shutdown();
 
-      const initHook2 = createSessionInitHook(TEST_DIR);
+      const initHook2 = trackHook(createSessionInitHook(TEST_DIR));
       await initHook2.execute(createTestInput({ sessionId: 'multi-2', project }));
+      await initHook2.shutdown();
 
       // Add observations sequentially
-      const obsHook1 = createObservationHook(TEST_DIR);
+      const obsHook1 = trackHook(createObservationHook(TEST_DIR));
       await obsHook1.execute(createTestInput({
         sessionId: 'multi-1',
         project,
@@ -334,8 +379,9 @@ describe('Hook System Integration', () => {
         toolInput: {},
         toolResponse: {},
       }));
+      await obsHook1.shutdown();
 
-      const obsHook2 = createObservationHook(TEST_DIR);
+      const obsHook2 = trackHook(createObservationHook(TEST_DIR));
       await obsHook2.execute(createTestInput({
         sessionId: 'multi-2',
         project,
@@ -343,6 +389,7 @@ describe('Hook System Integration', () => {
         toolInput: {},
         toolResponse: {},
       }));
+      await obsHook2.shutdown();
 
       // Verify both sessions have their observations
       const service = new MemoryHookService(TEST_DIR);
@@ -366,11 +413,12 @@ describe('Hook System Integration', () => {
       const project = 'test-project';
 
       // Init session
-      const initHook = createSessionInitHook(TEST_DIR);
+      const initHook = trackHook(createSessionInitHook(TEST_DIR));
       await initHook.execute(createTestInput({ sessionId, project }));
+      await initHook.shutdown();
 
       // Add many observations
-      const obsHook = createObservationHook(TEST_DIR);
+      const obsHook = trackHook(createObservationHook(TEST_DIR));
       const observationCount = 50;
 
       for (let i = 0; i < observationCount; i++) {
@@ -382,6 +430,7 @@ describe('Hook System Integration', () => {
           toolResponse: { content: `content ${i}` },
         }));
       }
+      await obsHook.shutdown();
 
       // Verify all observations stored
       const service = new MemoryHookService(TEST_DIR);
@@ -401,11 +450,12 @@ describe('Hook System Integration', () => {
       const project = 'test-project';
 
       // Init session
-      const initHook = createSessionInitHook(TEST_DIR);
+      const initHook = trackHook(createSessionInitHook(TEST_DIR));
       await initHook.execute(createTestInput({ sessionId, project }));
+      await initHook.shutdown();
 
       // Add observation with large response
-      const obsHook = createObservationHook(TEST_DIR);
+      const obsHook = trackHook(createObservationHook(TEST_DIR));
       const largeContent = 'A'.repeat(100000); // 100KB
 
       await obsHook.execute(createTestInput({
@@ -415,6 +465,7 @@ describe('Hook System Integration', () => {
         toolInput: { file_path: 'large.ts' },
         toolResponse: { content: largeContent },
       }));
+      await obsHook.shutdown();
 
       // Verify response was truncated
       const service = new MemoryHookService(TEST_DIR);

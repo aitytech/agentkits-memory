@@ -32,9 +32,20 @@ const SKIP_TOOLS = new Set([
  */
 export class ObservationHook implements EventHandler {
   private service: MemoryHookService;
+  private ownsService: boolean;
 
-  constructor(service: MemoryHookService) {
+  constructor(service: MemoryHookService, ownsService = false) {
     this.service = service;
+    this.ownsService = ownsService;
+  }
+
+  /**
+   * Shutdown the hook (closes database if owned)
+   */
+  async shutdown(): Promise<void> {
+    if (this.ownsService) {
+      await this.service.shutdown();
+    }
   }
 
   /**
@@ -96,7 +107,7 @@ export class ObservationHook implements EventHandler {
  */
 export function createObservationHook(cwd: string): ObservationHook {
   const service = new MemoryHookService(cwd);
-  return new ObservationHook(service);
+  return new ObservationHook(service, true);
 }
 
 export default ObservationHook;

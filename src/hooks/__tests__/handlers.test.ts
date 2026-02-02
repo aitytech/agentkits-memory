@@ -16,6 +16,9 @@ import { SummarizeHook, createSummarizeHook } from '../summarize.js';
 
 const TEST_DIR = path.join(process.cwd(), '.test-hook-handlers');
 
+// Track hooks for cleanup
+let activeHooks: Array<{ shutdown: () => Promise<void> }> = [];
+
 function createTestInput(overrides: Partial<NormalizedHookInput> = {}): NormalizedHookInput {
   return {
     sessionId: 'test-session-123',
@@ -26,25 +29,53 @@ function createTestInput(overrides: Partial<NormalizedHookInput> = {}): Normaliz
   };
 }
 
+// Helper to track hooks for cleanup
+function trackHook<T extends { shutdown: () => Promise<void> }>(hook: T): T {
+  activeHooks.push(hook);
+  return hook;
+}
+
 describe('Hook Handlers', () => {
   beforeEach(() => {
+    activeHooks = [];
     // Clean up test directory
     if (existsSync(TEST_DIR)) {
-      rmSync(TEST_DIR, { recursive: true });
+      try {
+        rmSync(TEST_DIR, { recursive: true });
+      } catch {
+        // Ignore errors on Windows
+      }
     }
     mkdirSync(TEST_DIR, { recursive: true });
   });
 
-  afterEach(() => {
+  afterEach(async () => {
+    // Shutdown all hooks first (releases database locks)
+    for (const hook of activeHooks) {
+      try {
+        await hook.shutdown();
+      } catch {
+        // Ignore shutdown errors
+      }
+    }
+    activeHooks = [];
+
+    // Small delay for Windows file system
+    await new Promise((r) => setTimeout(r, 100));
+
     // Clean up test directory
     if (existsSync(TEST_DIR)) {
-      rmSync(TEST_DIR, { recursive: true });
+      try {
+        rmSync(TEST_DIR, { recursive: true });
+      } catch {
+        // Ignore errors on Windows - files may still be locked
+      }
     }
   });
 
   describe('ContextHook', () => {
     it('should return no context for new project', async () => {
-      const hook = createContextHook(TEST_DIR);
+      const hook = trackHook(createContextHook(TEST_DIR));
       const input = createTestInput();
 
       const result = await hook.execute(input);
@@ -63,7 +94,7 @@ describe('Hook Handlers', () => {
       await service.shutdown();
 
       // Run context hook
-      const hook = createContextHook(TEST_DIR);
+      const hook = trackHook(createContextHook(TEST_DIR));
       const input = createTestInput({ sessionId: 'new-session' });
 
       const result = await hook.execute(input);
@@ -92,13 +123,16 @@ describe('Hook Handlers', () => {
 
   describe('SessionInitHook', () => {
     it('should initialize a new session', async () => {
-      const hook = createSessionInitHook(TEST_DIR);
+      const hook = trackHook(createSessionInitHook(TEST_DIR));
       const input = createTestInput({ prompt: 'Hello Claude' });
 
       const result = await hook.execute(input);
 
       expect(result.continue).toBe(true);
       expect(result.suppressOutput).toBe(true);
+
+      // Shutdown hook before verifying
+      await hook.shutdown();
 
       // Verify session was created
       const service = new MemoryHookService(TEST_DIR);
@@ -112,12 +146,14 @@ describe('Hook Handlers', () => {
 
     it('should not overwrite existing session', async () => {
       // Create initial session
-      const hook1 = createSessionInitHook(TEST_DIR);
+      const hook1 = trackHook(createSessionInitHook(TEST_DIR));
       await hook1.execute(createTestInput({ prompt: 'First prompt' }));
+      await hook1.shutdown();
 
       // Try to re-init with different prompt
-      const hook2 = createSessionInitHook(TEST_DIR);
+      const hook2 = trackHook(createSessionInitHook(TEST_DIR));
       await hook2.execute(createTestInput({ prompt: 'Second prompt' }));
+      await hook2.shutdown();
 
       // Verify original prompt preserved
       const service = new MemoryHookService(TEST_DIR);
@@ -145,11 +181,12 @@ describe('Hook Handlers', () => {
   describe('ObservationHook', () => {
     it('should store observation', async () => {
       // Initialize session first
-      const initHook = createSessionInitHook(TEST_DIR);
+      const initHook = trackHook(createSessionInitHook(TEST_DIR));
       await initHook.execute(createTestInput());
+      await initHook.shutdown();
 
       // Store observation
-      const hook = createObservationHook(TEST_DIR);
+      const hook = trackHook(createObservationHook(TEST_DIR));
       const input = createTestInput({
         toolName: 'Read',
         toolInput: { file_path: '/path/to/file.ts' },
@@ -157,6 +194,7 @@ describe('Hook Handlers', () => {
       });
 
       const result = await hook.execute(input);
+      await hook.shutdown();
 
       expect(result.continue).toBe(true);
       expect(result.suppressOutput).toBe(true);
@@ -172,7 +210,7 @@ describe('Hook Handlers', () => {
     });
 
     it('should skip if no tool name', async () => {
-      const hook = createObservationHook(TEST_DIR);
+      const hook = trackHook(createObservationHook(TEST_DIR));
       const input = createTestInput({ toolName: undefined });
 
       const result = await hook.execute(input);
@@ -183,10 +221,11 @@ describe('Hook Handlers', () => {
 
     it('should skip internal tools', async () => {
       // Initialize session first
-      const initHook = createSessionInitHook(TEST_DIR);
+      const initHook = trackHook(createSessionInitHook(TEST_DIR));
       await initHook.execute(createTestInput());
+      await initHook.shutdown();
 
-      const hook = createObservationHook(TEST_DIR);
+      const hook = trackHook(createObservationHook(TEST_DIR));
 
       // Test skipped tools
       for (const tool of ['TodoWrite', 'TodoRead', 'AskFollowupQuestion', 'AttemptCompletion']) {
@@ -196,6 +235,7 @@ describe('Hook Handlers', () => {
         expect(result.continue).toBe(true);
         expect(result.suppressOutput).toBe(true);
       }
+      await hook.shutdown();
 
       // Verify no observations stored
       const service = new MemoryHookService(TEST_DIR);
@@ -207,7 +247,7 @@ describe('Hook Handlers', () => {
     });
 
     it('should create session if not exists', async () => {
-      const hook = createObservationHook(TEST_DIR);
+      const hook = trackHook(createObservationHook(TEST_DIR));
       const input = createTestInput({
         sessionId: 'new-session',
         toolName: 'Read',
@@ -216,6 +256,7 @@ describe('Hook Handlers', () => {
       });
 
       const result = await hook.execute(input);
+      await hook.shutdown();
 
       expect(result.continue).toBe(true);
 
@@ -251,8 +292,8 @@ describe('Hook Handlers', () => {
       await service.storeObservation('test-session-123', 'test-project', 'Write', { file_path: 'b.ts' }, {}, TEST_DIR);
       await service.shutdown();
 
-      // Run summarize hook
-      const hook = createSummarizeHook(TEST_DIR);
+      // Run summarize hook (it already calls shutdown internally)
+      const hook = trackHook(createSummarizeHook(TEST_DIR));
       const input = createTestInput();
 
       const result = await hook.execute(input);
@@ -272,7 +313,7 @@ describe('Hook Handlers', () => {
     });
 
     it('should handle non-existent session', async () => {
-      const hook = createSummarizeHook(TEST_DIR);
+      const hook = trackHook(createSummarizeHook(TEST_DIR));
       const input = createTestInput({ sessionId: 'non-existent' });
 
       const result = await hook.execute(input);
