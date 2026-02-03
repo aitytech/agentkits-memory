@@ -7,7 +7,8 @@
  * @module @agentkits/memory/hooks/service
  */
 
-import { existsSync, mkdirSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync } from 'node:fs';
+import { spawn } from 'node:child_process';
 import * as path from 'node:path';
 import Database from 'better-sqlite3';
 import type { Database as BetterDatabase } from 'better-sqlite3';
@@ -27,7 +28,7 @@ import {
   extractConcepts,
   truncate,
 } from './types.js';
-import { enrichWithAI } from './ai-enrichment.js';
+import { enrichWithAI, enrichSummaryWithAI } from './ai-enrichment.js';
 
 /**
  * Memory Hook Service Configuration
@@ -91,6 +92,8 @@ export class MemoryHookService {
 
     // Enable WAL mode for better performance
     this.db.pragma('journal_mode = WAL');
+    // Prevent SQLITE_BUSY when concurrent processes access the DB
+    this.db.pragma('busy_timeout = 10000');
 
     // Create schema
     this.createSchema();
@@ -156,13 +159,20 @@ export class MemoryHookService {
     const promptNumber = this.getPromptNumber(sessionId) + 1;
     const now = Date.now();
 
-    this.db!.prepare(`
+    const result = this.db!.prepare(`
       INSERT OR IGNORE INTO user_prompts (session_id, prompt_number, prompt_text, created_at)
       VALUES (?, ?, ?, ?)
     `).run(sessionId, promptNumber, promptText, now);
 
+    const id = result.changes > 0 ? Number(result.lastInsertRowid) : 0;
+
+    // Queue embedding generation if insert succeeded
+    if (id > 0) {
+      this.queueSessionEmbedding('user_prompts', id);
+    }
+
     return {
-      id: 0, // not needed for return
+      id,
       sessionId,
       promptNumber,
       promptText,
@@ -313,6 +323,9 @@ export class MemoryHookService {
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(id, sessionId, project, toolName, inputStr, responseStr, cwd, now, type, title, promptNumber || null, JSON.stringify(filesRead), JSON.stringify(filesModified), subtitle, narrative, JSON.stringify(facts), JSON.stringify(concepts));
 
+    // Queue embedding generation
+    this.queueSessionEmbedding('observations', id);
+
     // Update session observation count
     this.db!.prepare(`
       UPDATE sessions
@@ -371,6 +384,198 @@ export class MemoryHookService {
     );
 
     return true;
+  }
+
+  /**
+   * Build embedding text for a session record based on table type.
+   */
+  private getSessionEmbeddingText(
+    table: 'observations' | 'user_prompts' | 'session_summaries',
+    row: Record<string, unknown>
+  ): string {
+    if (table === 'observations') {
+      const parts = [row.title, row.subtitle, row.narrative];
+      try {
+        const concepts = JSON.parse((row.concepts as string) || '[]');
+        if (concepts.length > 0) parts.push(concepts.join(', '));
+      } catch { /* ignore */ }
+      return (parts.filter(Boolean) as string[]).join(' ').trim();
+    } else if (table === 'user_prompts') {
+      return ((row.prompt_text as string) || '').trim();
+    } else {
+      const parts = [row.request, row.completed, row.next_steps, row.notes];
+      return (parts.filter(Boolean) as string[]).join(' ').trim();
+    }
+  }
+
+  // ===== Embedding Queue + Worker =====
+
+  /** Max records to process per worker invocation */
+  private static readonly EMBED_BATCH_LIMIT = 200;
+
+  /**
+   * Queue a session record for embedding generation.
+   * Inserts into SQLite embedding_queue table — atomic, no file I/O.
+   * Called from hook handlers — non-blocking, no model loading.
+   */
+  queueSessionEmbedding(
+    table: 'observations' | 'user_prompts' | 'session_summaries',
+    recordId: string | number
+  ): void {
+    if (!this.db) return;
+    this.db.prepare(
+      'INSERT INTO embedding_queue (target_table, target_id, created_at) VALUES (?, ?, ?)'
+    ).run(table, String(recordId), Date.now());
+  }
+
+  /**
+   * Spawn a detached embedding worker if not already running.
+   * Uses a lock file (PID-based) to prevent multiple concurrent workers.
+   */
+  ensureEmbeddingWorkerRunning(cwd: string): void {
+    const lockFile = path.join(path.dirname(this.dbPath), 'embed-worker.lock');
+
+    // Check if worker is already running
+    if (existsSync(lockFile)) {
+      try {
+        const pid = parseInt(readFileSync(lockFile, 'utf-8').trim(), 10);
+        if (pid > 0) {
+          try {
+            process.kill(pid, 0); // signal 0 = check if alive
+            return; // Worker still running
+          } catch {
+            // Stale lock, remove
+            try { unlinkSync(lockFile); } catch { /* ignore */ }
+          }
+        }
+      } catch {
+        try { unlinkSync(lockFile); } catch { /* ignore */ }
+      }
+    }
+
+    // Spawn detached worker
+    try {
+      const cliPath = path.resolve(cwd, 'dist/hooks/cli.js');
+      const child = spawn('node', [cliPath, 'embed-session', cwd], {
+        detached: true,
+        stdio: 'ignore',
+        env: { ...process.env },
+      });
+      child.unref();
+    } catch {
+      // Silently ignore
+    }
+  }
+
+  /**
+   * Process the embedding queue. Called by the worker process.
+   * Loads embedding model ONCE. Processes queued items + any DB records missing embeddings.
+   * Uses lock file to prevent concurrent workers. Respects EMBED_BATCH_LIMIT.
+   */
+  async processEmbeddingQueue(): Promise<number> {
+    await this.ensureInitialized();
+
+    const lockFile = path.join(path.dirname(this.dbPath), 'embed-worker.lock');
+    writeFileSync(lockFile, String(process.pid));
+
+    let count = 0;
+    try {
+      const { LocalEmbeddingsService } = await import('../embeddings/local-embeddings.js');
+      const cacheDir = path.join(path.dirname(this.dbPath), 'embeddings-cache');
+      const embService = new LocalEmbeddingsService({ cacheDir });
+      await embService.initialize();
+
+      const idColMap: Record<string, string> = {
+        observations: 'id',
+        user_prompts: 'rowid',
+        session_summaries: 'rowid',
+      };
+
+      // Phase 1: Process queued items (claimed atomically)
+      while (count < MemoryHookService.EMBED_BATCH_LIMIT) {
+        // Claim next pending item
+        const item = this.db!.prepare(
+          "SELECT id, target_table, target_id FROM embedding_queue WHERE status = 'pending' ORDER BY id ASC LIMIT 1"
+        ).get() as { id: number; target_table: string; target_id: string } | undefined;
+
+        if (!item) break;
+
+        // Mark as processing
+        this.db!.prepare("UPDATE embedding_queue SET status = 'processing' WHERE id = ?").run(item.id);
+
+        const idCol = idColMap[item.target_table];
+        if (!idCol) {
+          this.db!.prepare('DELETE FROM embedding_queue WHERE id = ?').run(item.id);
+          continue;
+        }
+
+        try {
+          const row = this.db!.prepare(
+            `SELECT * FROM ${item.target_table} WHERE ${idCol} = ? AND embedding IS NULL`
+          ).get(item.target_id) as Record<string, unknown> | undefined;
+
+          if (!row) {
+            // Already embedded or doesn't exist — remove from queue
+            this.db!.prepare('DELETE FROM embedding_queue WHERE id = ?').run(item.id);
+            continue;
+          }
+
+          const text = this.getSessionEmbeddingText(
+            item.target_table as 'observations' | 'user_prompts' | 'session_summaries', row
+          );
+          if (!text) {
+            this.db!.prepare('DELETE FROM embedding_queue WHERE id = ?').run(item.id);
+            continue;
+          }
+
+          const result = await embService.embed(text);
+          const buffer = Buffer.from(result.embedding.buffer, result.embedding.byteOffset, result.embedding.byteLength);
+          this.db!.prepare(`UPDATE ${item.target_table} SET embedding = ? WHERE ${idCol} = ?`).run(buffer, item.target_id);
+          this.db!.prepare('DELETE FROM embedding_queue WHERE id = ?').run(item.id);
+          count++;
+        } catch {
+          // Mark as failed, will be retried on next worker run
+          this.db!.prepare("UPDATE embedding_queue SET status = 'pending' WHERE id = ?").run(item.id);
+        }
+      }
+
+      // Phase 2: Catch up on any DB records missing embeddings (not in queue)
+      if (count < MemoryHookService.EMBED_BATCH_LIMIT) {
+        const tables = Object.entries(idColMap);
+        for (const [tableName, idCol] of tables) {
+          if (count >= MemoryHookService.EMBED_BATCH_LIMIT) break;
+          try {
+            const remaining = MemoryHookService.EMBED_BATCH_LIMIT - count;
+            const rows = this.db!.prepare(
+              `SELECT *, ${idCol} as _rid FROM ${tableName} WHERE embedding IS NULL ORDER BY rowid DESC LIMIT ?`
+            ).all(remaining) as Record<string, unknown>[];
+
+            for (const row of rows) {
+              if (count >= MemoryHookService.EMBED_BATCH_LIMIT) break;
+              const text = this.getSessionEmbeddingText(
+                tableName as 'observations' | 'user_prompts' | 'session_summaries', row
+              );
+              if (!text) continue;
+
+              try {
+                const result = await embService.embed(text);
+                const buffer = Buffer.from(result.embedding.buffer, result.embedding.byteOffset, result.embedding.byteLength);
+                this.db!.prepare(`UPDATE ${tableName} SET embedding = ? WHERE ${idCol} = ?`).run(buffer, row._rid);
+                count++;
+              } catch {
+                // Skip
+              }
+            }
+          } catch {
+            // Table might not exist
+          }
+        }
+      }
+    } finally {
+      try { unlinkSync(lockFile); } catch { /* ignore */ }
+    }
+
+    return count;
   }
 
   /**
@@ -666,9 +871,16 @@ export class MemoryHookService {
       now
     );
 
+    const id = Number(result.lastInsertRowid);
+
+    // Queue embedding generation
+    if (id > 0) {
+      this.queueSessionEmbedding('session_summaries', id);
+    }
+
     return {
       ...summary,
-      id: Number(result.lastInsertRowid),
+      id,
       createdAt: now,
     };
   }
@@ -687,6 +899,50 @@ export class MemoryHookService {
     `).all(project, limit) as Record<string, unknown>[];
 
     return rows.map(row => this.rowToSummary(row));
+  }
+
+  /**
+   * Enrich a session summary with AI using transcript data.
+   * Called from a background process after the template summary is saved.
+   * Reads the transcript JSONL, extracts last assistant message,
+   * then uses AI to enhance the completed/nextSteps fields.
+   */
+  async enrichSessionSummary(sessionId: string, transcriptPath: string): Promise<boolean> {
+    await this.ensureInitialized();
+
+    // Get existing summary from DB
+    const rows = this.db!.prepare(
+      'SELECT * FROM session_summaries WHERE session_id = ? ORDER BY created_at DESC LIMIT 1'
+    ).all(sessionId) as Record<string, unknown>[];
+
+    if (rows.length === 0) return false;
+
+    const summary = this.rowToSummary(rows[0]);
+
+    // Extract last assistant message from transcript
+    const lastMessage = extractLastAssistantMessage(transcriptPath);
+    if (!lastMessage) return false;
+
+    // Build template summary text for AI context
+    const templateText = [
+      summary.request ? `Request: ${summary.request}` : '',
+      summary.completed ? `Completed: ${summary.completed}` : '',
+      summary.filesModified.length > 0 ? `Files modified: ${summary.filesModified.join(', ')}` : '',
+      summary.notes ? `Notes: ${summary.notes}` : '',
+    ].filter(Boolean).join('\n');
+
+    // Call AI enrichment
+    const enriched = await enrichSummaryWithAI(templateText, lastMessage).catch(() => null);
+    if (!enriched) return false;
+
+    // Update summary in-place
+    this.db!.prepare(`
+      UPDATE session_summaries
+      SET completed = ?, next_steps = ?
+      WHERE id = ?
+    `).run(enriched.completed, enriched.nextSteps, summary.id);
+
+    return true;
   }
 
   private rowToSummary(row: Record<string, unknown>): SessionSummary {
@@ -749,6 +1005,7 @@ export class MemoryHookService {
         narrative TEXT,
         facts TEXT DEFAULT '[]',
         concepts TEXT DEFAULT '[]',
+        embedding BLOB,
         FOREIGN KEY (session_id) REFERENCES sessions(session_id)
       )
     `);
@@ -761,6 +1018,7 @@ export class MemoryHookService {
         prompt_number INTEGER NOT NULL,
         prompt_text TEXT NOT NULL,
         created_at INTEGER NOT NULL,
+        embedding BLOB,
         UNIQUE(session_id, prompt_number),
         FOREIGN KEY (session_id) REFERENCES sessions(session_id)
       )
@@ -780,7 +1038,19 @@ export class MemoryHookService {
         notes TEXT,
         prompt_number INTEGER,
         created_at INTEGER NOT NULL,
+        embedding BLOB,
         FOREIGN KEY (session_id) REFERENCES sessions(session_id)
+      )
+    `);
+
+    // Embedding queue: holds pending embed requests processed by a single worker
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS embedding_queue (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        target_table TEXT NOT NULL,
+        target_id TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        status TEXT DEFAULT 'pending'
       )
     `);
 
@@ -792,6 +1062,7 @@ export class MemoryHookService {
     this.db.exec('CREATE INDEX IF NOT EXISTS idx_prompts_session ON user_prompts(session_id)');
     this.db.exec('CREATE INDEX IF NOT EXISTS idx_summaries_session ON session_summaries(session_id)');
     this.db.exec('CREATE INDEX IF NOT EXISTS idx_summaries_project ON session_summaries(project)');
+    this.db.exec('CREATE INDEX IF NOT EXISTS idx_embed_queue_status ON embedding_queue(status)');
 
     // Migration: add prompt_number to existing observations table
     this.migrateSchema();
@@ -820,6 +1091,14 @@ export class MemoryHookService {
       for (const [column, sql] of migrations) {
         if (!columnNames.has(column)) {
           this.db.exec(sql);
+        }
+      }
+
+      // Add embedding column to all session tables
+      for (const table of ['observations', 'user_prompts', 'session_summaries']) {
+        const cols = this.db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+        if (!cols.some(c => c.name === 'embedding')) {
+          this.db.exec(`ALTER TABLE ${table} ADD COLUMN embedding BLOB`);
         }
       }
     } catch {
@@ -895,6 +1174,60 @@ export class MemoryHookService {
  */
 export function createHookService(cwd: string): MemoryHookService {
   return new MemoryHookService(cwd);
+}
+
+/**
+ * Extract the last assistant message from a Claude Code transcript JSONL file.
+ * Reads the file, iterates lines in reverse, finds the last 'assistant' type entry,
+ * extracts text content, and strips <system-reminder> tags.
+ */
+export function extractLastAssistantMessage(transcriptPath: string): string | null {
+  if (!transcriptPath || !existsSync(transcriptPath)) return null;
+
+  try {
+    const content = readFileSync(transcriptPath, 'utf-8').trim();
+    if (!content) return null;
+
+    const lines = content.split('\n');
+
+    // Iterate in reverse to find the last assistant message
+    for (let i = lines.length - 1; i >= 0; i--) {
+      try {
+        const line = JSON.parse(lines[i]);
+        if (line.type !== 'assistant') continue;
+
+        const msgContent = line.message?.content;
+        if (!msgContent) continue;
+
+        let text = '';
+        if (typeof msgContent === 'string') {
+          text = msgContent;
+        } else if (Array.isArray(msgContent)) {
+          // Extract text blocks from content array (skip tool_use blocks)
+          text = msgContent
+            .filter((c: { type: string }) => c.type === 'text')
+            .map((c: { text: string }) => c.text)
+            .join('\n');
+        }
+
+        if (!text) continue;
+
+        // Strip <system-reminder> tags
+        text = text.replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, '');
+        text = text.replace(/\n{3,}/g, '\n\n').trim();
+
+        // Return truncated to avoid excessive tokens
+        return text.substring(0, 5000);
+      } catch {
+        // Skip unparseable lines
+        continue;
+      }
+    }
+
+    return null;
+  } catch {
+    return null;
+  }
 }
 
 export default MemoryHookService;

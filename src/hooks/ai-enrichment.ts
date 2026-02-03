@@ -1,12 +1,16 @@
 /**
- * AI Enrichment for Observations
+ * AI Enrichment for Observations and Session Summaries
  *
- * Uses Claude Agent SDK (when available) to generate richer
- * subtitle, narrative, facts, and concepts from tool observations.
- * Falls back to template-based extraction when SDK is not available.
+ * Uses `claude --print` CLI to generate richer subtitle, narrative,
+ * facts, and concepts from tool observations, and to enhance session
+ * summaries using transcript data. This avoids the Claude Agent SDK's
+ * `query()` which creates visible sub-conversations in the Claude Code UI.
+ * Falls back to template-based extraction when `claude` CLI is not available.
  *
  * @module @agentkits/memory/hooks/ai-enrichment
  */
+
+import { execFileSync } from 'node:child_process';
 
 /**
  * Enriched observation data from AI extraction
@@ -21,31 +25,21 @@ export interface EnrichedObservation {
 /**
  * Environment variable to enable/disable AI enrichment.
  * Set AGENTKITS_AI_ENRICHMENT=true to enable, false to disable.
- * When not set, defaults to auto-detect (uses AI if SDK available).
+ * When not set, defaults to auto-detect (uses AI if CLI available).
  */
 const AI_ENRICHMENT_ENV_KEY = 'AGENTKITS_AI_ENRICHMENT';
 
-/** Cached SDK availability */
-let _sdkAvailable: boolean | null = null;
-let _queryFn: QueryFunction | null = null;
+/** Cached CLI availability */
+let _cliAvailable: boolean | null = null;
 
-/** Type for the SDK query function */
-export type QueryFunction = (params: {
-  prompt: string;
-  options: Record<string, unknown>;
-}) => AsyncIterable<{
-  type: string;
-  subtype?: string;
-  result?: string;
-  total_cost_usd?: number;
-  [key: string]: unknown;
-}>;
+/** Mock function for testing (replaces runClaudePrint when set) */
+let _mockRunClaudePrint: ((prompt: string, systemPrompt: string, timeoutMs: number) => string | null) | null = null;
 
 /**
  * Check if AI enrichment is enabled via environment variable
  * - 'true' / '1' → force enable
  * - 'false' / '0' → force disable
- * - not set → auto-detect (try SDK, fallback to template)
+ * - not set → auto-detect (try CLI, fallback to template)
  */
 function isEnvEnabled(): boolean | null {
   const value = process.env[AI_ENRICHMENT_ENV_KEY];
@@ -56,35 +50,68 @@ function isEnvEnabled(): boolean | null {
 /**
  * Synchronous check: is AI enrichment potentially enabled?
  * Used by observation hook to decide whether to spawn background process.
- * Does NOT check SDK availability (that's async). Just checks env var.
+ * Does NOT check CLI availability (that's async). Just checks env var.
  */
 export function isAIEnrichmentEnabled(): boolean {
   const envEnabled = isEnvEnabled();
   if (envEnabled === false) return false;
   // If explicitly enabled or auto-detect, optimistically return true.
-  // The background process will handle SDK availability check.
+  // The background process will handle CLI availability check.
   return true;
 }
 
 /**
- * Check if Claude Agent SDK is available and cache the result
+ * Run a prompt through `claude --print` and return the raw text result.
+ * Uses --print mode which doesn't create a visible conversation.
+ * When a mock is set (testing), delegates to the mock instead.
  */
-async function getQueryFunction(): Promise<QueryFunction | null> {
-  // Check env override first
-  const envEnabled = isEnvEnabled();
-  if (envEnabled === false) return null;
-
-  if (_sdkAvailable === false) return null;
-  if (_queryFn) return _queryFn;
+function runClaudePrint(prompt: string, systemPrompt: string, timeoutMs: number): string | null {
+  // Use mock if set (testing)
+  if (_mockRunClaudePrint) {
+    return _mockRunClaudePrint(prompt, systemPrompt, timeoutMs);
+  }
 
   try {
-    const { query } = await import('@anthropic-ai/claude-agent-sdk');
-    _queryFn = query as unknown as QueryFunction;
-    _sdkAvailable = true;
-    return _queryFn;
+    const result = execFileSync('claude', [
+      '--print',
+      '--model', 'haiku',
+      '--system-prompt', systemPrompt,
+      '--max-turns', '1',
+      '--no-input',
+      '-p', prompt,
+    ], {
+      encoding: 'utf-8',
+      timeout: timeoutMs,
+      stdio: ['pipe', 'pipe', 'ignore'], // stdin pipe, stdout pipe, stderr ignore
+    });
+    return result.trim() || null;
   } catch {
-    _sdkAvailable = false;
     return null;
+  }
+}
+
+/**
+ * Check if `claude` CLI is available and cache the result.
+ * Env override (false/0) always takes priority over cache.
+ */
+function isClaudeCliAvailable(): boolean {
+  // Env override always wins — even over cached/mocked state
+  const envEnabled = isEnvEnabled();
+  if (envEnabled === false) return false;
+
+  if (_cliAvailable !== null) return _cliAvailable;
+
+  try {
+    execFileSync('claude', ['--version'], {
+      encoding: 'utf-8',
+      timeout: 5000,
+      stdio: ['pipe', 'pipe', 'ignore'],
+    });
+    _cliAvailable = true;
+    return true;
+  } catch {
+    _cliAvailable = false;
+    return false;
   }
 }
 
@@ -152,9 +179,10 @@ export function parseAIResponse(text: string): EnrichedObservation | null {
 }
 
 /**
- * Enrich an observation using Claude Agent SDK
+ * Enrich an observation using `claude --print` CLI.
  *
- * Returns enriched data if SDK is available and succeeds,
+ * Uses --print mode to avoid creating visible sub-conversations.
+ * Returns enriched data if CLI is available and succeeds,
  * or null to signal fallback to template-based extraction.
  */
 export async function enrichWithAI(
@@ -163,76 +191,146 @@ export async function enrichWithAI(
   toolResponse: string,
   timeoutMs: number = 15000
 ): Promise<EnrichedObservation | null> {
-  const queryFn = await getQueryFunction();
-  if (!queryFn) return null;
+  if (!isClaudeCliAvailable()) return null;
 
   try {
     const prompt = buildExtractionPrompt(toolName, toolInput, toolResponse);
+    const systemPrompt = 'You are a code observation analyzer. Extract structured insights from tool usage observations. Return only valid JSON.';
 
-    // Race between AI query and timeout
-    const result = await Promise.race([
-      executeQuery(queryFn, prompt),
-      new Promise<null>((resolve) => setTimeout(() => resolve(null), timeoutMs)),
-    ]);
-
-    return result;
+    const resultText = runClaudePrint(prompt, systemPrompt, timeoutMs);
+    if (!resultText) return null;
+    return parseAIResponse(resultText);
   } catch {
-    // AI enrichment failed, caller should use template fallback
     return null;
   }
 }
 
 /**
- * Execute the SDK query and extract the result
- */
-async function executeQuery(
-  queryFn: QueryFunction,
-  prompt: string
-): Promise<EnrichedObservation | null> {
-  let resultText = '';
-
-  const stream = queryFn({
-    prompt,
-    options: {
-      model: 'haiku',
-      systemPrompt: 'You are a code observation analyzer. Extract structured insights from tool usage observations. Return only valid JSON.',
-      permissionMode: 'bypassPermissions',
-      allowDangerouslySkipPermissions: true,
-      maxTurns: 1,
-      allowedTools: [], // No tools needed, just text output
-    },
-  });
-
-  for await (const message of stream) {
-    if (message.type === 'result' && message.subtype === 'success') {
-      resultText = message.result || '';
-    }
-  }
-
-  if (!resultText) return null;
-  return parseAIResponse(resultText);
-}
-
-/**
- * Check if AI enrichment is available (SDK installed)
+ * Check if AI enrichment is available (`claude` CLI installed)
  */
 export async function isAIEnrichmentAvailable(): Promise<boolean> {
-  const queryFn = await getQueryFunction();
-  return queryFn !== null;
+  return isClaudeCliAvailable();
 }
 
 /**
- * Reset cached SDK availability (for testing)
+ * Reset cached CLI availability (for testing)
  */
 export function resetAIEnrichmentCache(): void {
-  _sdkAvailable = null;
-  _queryFn = null;
+  _cliAvailable = null;
+  _mockRunClaudePrint = null;
 }
 
 /**
- * Inject a mock query function (for testing only)
+ * Override CLI availability for testing (inject mock)
  */
-export function _setQueryFunctionForTesting(fn: QueryFunction | null): void {
-  _queryFn = fn;
-  _sdkAvailable = fn !== null;
+export function _setCliAvailableForTesting(available: boolean): void {
+  _cliAvailable = available;
+}
+
+/**
+ * Inject a mock for runClaudePrint (for testing).
+ * The mock receives (prompt, systemPrompt, timeoutMs) and returns string | null.
+ * Pass null to clear the mock.
+ */
+export function _setRunClaudePrintMockForTesting(
+  fn: ((prompt: string, systemPrompt: string, timeoutMs: number) => string | null) | null
+): void {
+  _mockRunClaudePrint = fn;
+  if (fn) {
+    _cliAvailable = true; // Mock implies CLI is "available"
+  }
+}
+
+// ===== Session Summary Enrichment =====
+
+/**
+ * Enriched session summary data from AI extraction
+ */
+export interface EnrichedSummary {
+  completed: string;
+  nextSteps: string;
+}
+
+/**
+ * Build prompt for enriching a session summary using transcript context
+ */
+export function buildSummaryPrompt(
+  templateSummary: string,
+  lastAssistantMessage: string
+): string {
+  return `Analyze this Claude Code session and produce an enriched summary.
+
+## Template Summary (from observations)
+${templateSummary.substring(0, 3000)}
+
+## Last Assistant Message (from transcript)
+${lastAssistantMessage.substring(0, 3000)}
+
+Return ONLY a JSON object (no markdown, no code fences) with these fields:
+{
+  "completed": "Concise paragraph describing what was actually completed (2-4 sentences). Merge info from both the template summary and the assistant's final message.",
+  "nextSteps": "Concise list of remaining work or follow-up items, if any. Use 'None' if everything was completed."
+}`;
+}
+
+/**
+ * Parse enriched summary from AI response
+ */
+export function parseSummaryResponse(text: string): EnrichedSummary | null {
+  try {
+    let cleaned = text.trim();
+    if (cleaned.startsWith('```json')) cleaned = cleaned.slice(7);
+    else if (cleaned.startsWith('```')) cleaned = cleaned.slice(3);
+    if (cleaned.endsWith('```')) cleaned = cleaned.slice(0, -3);
+    cleaned = cleaned.trim();
+
+    const parsed = JSON.parse(cleaned);
+
+    // Handle completed: must be string
+    const completed = typeof parsed.completed === 'string' ? parsed.completed : null;
+    if (!completed) return null;
+
+    // Handle nextSteps: accept string or array (AI often returns arrays for "list")
+    let nextSteps: string;
+    if (typeof parsed.nextSteps === 'string') {
+      nextSteps = parsed.nextSteps;
+    } else if (Array.isArray(parsed.nextSteps)) {
+      nextSteps = parsed.nextSteps.map((s: unknown) => String(s)).join('; ');
+    } else {
+      nextSteps = 'None';
+    }
+
+    return {
+      completed: completed.substring(0, 1000),
+      nextSteps: nextSteps.substring(0, 500),
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Enrich a session summary using `claude --print` CLI.
+ *
+ * Takes template-based summary + last assistant message from transcript,
+ * returns AI-enhanced completed/nextSteps fields.
+ * Uses --print mode to avoid creating visible sub-conversations.
+ */
+export async function enrichSummaryWithAI(
+  templateSummary: string,
+  lastAssistantMessage: string,
+  timeoutMs: number = 20000
+): Promise<EnrichedSummary | null> {
+  if (!isClaudeCliAvailable()) return null;
+
+  try {
+    const prompt = buildSummaryPrompt(templateSummary, lastAssistantMessage);
+    const systemPrompt = 'You are a session summary analyzer. Produce concise, accurate session summaries. Return only valid JSON.';
+
+    const resultText = runClaudePrint(prompt, systemPrompt, timeoutMs);
+    if (!resultText) return null;
+    return parseSummaryResponse(resultText);
+  } catch {
+    return null;
+  }
 }

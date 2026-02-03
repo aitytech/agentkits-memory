@@ -8,7 +8,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { existsSync, rmSync, mkdirSync } from 'node:fs';
 import * as path from 'node:path';
 import { MemoryHookService, createHookService } from '../service.js';
-import { _setQueryFunctionForTesting, resetAIEnrichmentCache, type QueryFunction } from '../ai-enrichment.js';
+import { _setRunClaudePrintMockForTesting, resetAIEnrichmentCache } from '../ai-enrichment.js';
 
 const TEST_DIR = path.join(process.cwd(), '.test-memory-hooks');
 
@@ -474,7 +474,7 @@ describe('MemoryHookService', () => {
     });
 
     afterEach(() => {
-      _setQueryFunctionForTesting(null);
+      _setRunClaudePrintMockForTesting(null);
       resetAIEnrichmentCache();
       if (originalEnv === undefined) {
         delete process.env.AGENTKITS_AI_ENRICHMENT;
@@ -498,12 +498,7 @@ describe('MemoryHookService', () => {
         facts: ['File has 200 lines', 'Uses JWT tokens'],
         concepts: ['authentication', 'jwt'],
       });
-      const mockFn: QueryFunction = () => {
-        return (async function* () {
-          yield { type: 'result', subtype: 'success', result: validResponse };
-        })();
-      };
-      _setQueryFunctionForTesting(mockFn);
+      _setRunClaudePrintMockForTesting(() => validResponse);
 
       const result = await service.enrichObservation(obs.id);
       expect(result).toBe(true);
@@ -528,13 +523,8 @@ describe('MemoryHookService', () => {
         'session-1', 'test-project', 'Read', {}, {}, TEST_DIR
       );
 
-      // Mock AI that returns invalid response
-      const mockFn: QueryFunction = () => {
-        return (async function* () {
-          yield { type: 'result', subtype: 'success', result: 'not valid json' };
-        })();
-      };
-      _setQueryFunctionForTesting(mockFn);
+      // Mock CLI that returns invalid response
+      _setRunClaudePrintMockForTesting(() => 'not valid json');
 
       const result = await service.enrichObservation(obs.id);
       expect(result).toBe(false);
@@ -551,11 +541,8 @@ describe('MemoryHookService', () => {
         'session-1', 'test-project', 'Read', {}, {}, TEST_DIR
       );
 
-      // Mock AI that throws
-      const mockFn: QueryFunction = () => {
-        throw new Error('SDK error');
-      };
-      _setQueryFunctionForTesting(mockFn);
+      // Mock CLI that throws
+      _setRunClaudePrintMockForTesting(() => { throw new Error('CLI error'); });
 
       const result = await service.enrichObservation(obs.id);
       expect(result).toBe(false);

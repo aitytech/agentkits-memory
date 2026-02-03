@@ -2,7 +2,7 @@
  * Unit Tests for AI Enrichment Module
  *
  * Tests the enrichment logic, env toggle, fallback behavior,
- * parseAIResponse, buildExtractionPrompt, and mock SDK flow.
+ * parseAIResponse, buildExtractionPrompt, and mock CLI flow.
  *
  * @module @agentkits/memory/hooks/__tests__/ai-enrichment
  */
@@ -15,8 +15,11 @@ import {
   resetAIEnrichmentCache,
   parseAIResponse,
   buildExtractionPrompt,
-  _setQueryFunctionForTesting,
-  type QueryFunction,
+  parseSummaryResponse,
+  buildSummaryPrompt,
+  enrichSummaryWithAI,
+  _setRunClaudePrintMockForTesting,
+  _setCliAvailableForTesting,
 } from '../ai-enrichment.js';
 
 describe('AI Enrichment Module', () => {
@@ -32,7 +35,6 @@ describe('AI Enrichment Module', () => {
     } else {
       process.env.AGENTKITS_AI_ENRICHMENT = originalEnv;
     }
-    _setQueryFunctionForTesting(null);
     resetAIEnrichmentCache();
   });
 
@@ -52,7 +54,7 @@ describe('AI Enrichment Module', () => {
     it('should attempt enrichment when AGENTKITS_AI_ENRICHMENT=true', async () => {
       process.env.AGENTKITS_AI_ENRICHMENT = 'true';
       const result = await enrichWithAI('Read', '{"file_path":"test.ts"}', '{}');
-      // Returns enriched data if SDK available, null otherwise
+      // Returns enriched data if CLI available, null otherwise
       if (result !== null) {
         expect(typeof result.subtitle).toBe('string');
         expect(typeof result.narrative).toBe('string');
@@ -64,7 +66,7 @@ describe('AI Enrichment Module', () => {
     it('should auto-detect when env not set', async () => {
       delete process.env.AGENTKITS_AI_ENRICHMENT;
       const result = await enrichWithAI('Read', '{"file_path":"test.ts"}', '{}');
-      // Returns enriched data if SDK available, null otherwise
+      // Returns enriched data if CLI available, null otherwise
       if (result !== null) {
         expect(typeof result.subtitle).toBe('string');
         expect(typeof result.narrative).toBe('string');
@@ -75,7 +77,7 @@ describe('AI Enrichment Module', () => {
       process.env.AGENTKITS_AI_ENRICHMENT = '1';
       resetAIEnrichmentCache();
       const result = await enrichWithAI('Read', '{}', '{}');
-      // Returns enriched data if SDK available, null otherwise
+      // Returns enriched data if CLI available, null otherwise
       if (result !== null) {
         expect(typeof result.subtitle).toBe('string');
       }
@@ -122,10 +124,9 @@ describe('AI Enrichment Module', () => {
       expect(typeof available).toBe('boolean');
     });
 
-    it('should return true when mock query function is set', async () => {
+    it('should return true when CLI available mock is set', async () => {
       delete process.env.AGENTKITS_AI_ENRICHMENT;
-      const mockFn = createMockQueryFn('{}');
-      _setQueryFunctionForTesting(mockFn);
+      _setCliAvailableForTesting(true);
       const available = await isAIEnrichmentAvailable();
       expect(available).toBe(true);
     });
@@ -141,45 +142,13 @@ describe('AI Enrichment Module', () => {
       // Reset cache
       resetAIEnrichmentCache();
 
-      // Now with auto-detect, result depends on SDK availability
+      // Now with auto-detect, result depends on CLI availability
       delete process.env.AGENTKITS_AI_ENRICHMENT;
       const result = await enrichWithAI('Read', '{}', '{}');
-      // If SDK is available, returns enriched data; otherwise null
+      // If CLI is available, returns enriched data; otherwise null
       if (result !== null) {
         expect(typeof result.subtitle).toBe('string');
       }
-    });
-  });
-
-  describe('_setQueryFunctionForTesting', () => {
-    it('should inject a mock query function', async () => {
-      delete process.env.AGENTKITS_AI_ENRICHMENT;
-      const validResponse = JSON.stringify({
-        subtitle: 'Reading test file',
-        narrative: 'Read the test file to understand its contents.',
-        facts: ['File has 10 lines'],
-        concepts: ['testing'],
-      });
-      const mockFn = createMockQueryFn(validResponse);
-      _setQueryFunctionForTesting(mockFn);
-
-      const result = await enrichWithAI('Read', '{"file_path":"test.ts"}', 'file contents');
-      expect(result).not.toBeNull();
-      expect(result!.subtitle).toBe('Reading test file');
-      expect(result!.narrative).toBe('Read the test file to understand its contents.');
-      expect(result!.facts).toEqual(['File has 10 lines']);
-      expect(result!.concepts).toEqual(['testing']);
-    });
-
-    it('should clear mock when set to null', async () => {
-      const mockFn = createMockQueryFn('{}');
-      _setQueryFunctionForTesting(mockFn);
-      _setQueryFunctionForTesting(null);
-
-      // After clearing, should fall back to SDK detection
-      const available = await isAIEnrichmentAvailable();
-      // SDK not installed in test env
-      expect(typeof available).toBe('boolean');
     });
   });
 
@@ -402,7 +371,11 @@ describe('AI Enrichment Module', () => {
     });
   });
 
-  describe('enrichWithAI with mock SDK', () => {
+  describe('enrichWithAI with mock CLI', () => {
+    afterEach(() => {
+      _setRunClaudePrintMockForTesting(null);
+    });
+
     it('should return enriched observation on success', async () => {
       delete process.env.AGENTKITS_AI_ENRICHMENT;
       const validResponse = JSON.stringify({
@@ -411,7 +384,7 @@ describe('AI Enrichment Module', () => {
         facts: ['File has 200 lines', 'Uses JWT tokens'],
         concepts: ['authentication', 'jwt', 'typescript'],
       });
-      _setQueryFunctionForTesting(createMockQueryFn(validResponse));
+      _setRunClaudePrintMockForTesting(() => validResponse);
 
       const result = await enrichWithAI('Read', '{"file_path":"auth.ts"}', 'export class Auth {}');
       expect(result).not.toBeNull();
@@ -420,117 +393,44 @@ describe('AI Enrichment Module', () => {
       expect(result!.concepts).toContain('jwt');
     });
 
-    it('should return null when SDK returns empty result', async () => {
+    it('should return null when CLI returns empty result', async () => {
       delete process.env.AGENTKITS_AI_ENRICHMENT;
-      _setQueryFunctionForTesting(createMockQueryFn(''));
+      _setRunClaudePrintMockForTesting(() => null);
 
       const result = await enrichWithAI('Read', '{}', '{}');
       expect(result).toBeNull();
     });
 
-    it('should return null when SDK returns invalid JSON', async () => {
+    it('should return null when CLI returns invalid JSON', async () => {
       delete process.env.AGENTKITS_AI_ENRICHMENT;
-      _setQueryFunctionForTesting(createMockQueryFn('not valid json'));
+      _setRunClaudePrintMockForTesting(() => 'not valid json');
 
       const result = await enrichWithAI('Read', '{}', '{}');
       expect(result).toBeNull();
     });
 
-    it('should return null when SDK returns incomplete structure', async () => {
+    it('should return null when CLI returns incomplete structure', async () => {
       delete process.env.AGENTKITS_AI_ENRICHMENT;
-      _setQueryFunctionForTesting(createMockQueryFn('{"subtitle":"test"}'));
+      _setRunClaudePrintMockForTesting(() => '{"subtitle":"test"}');
 
       const result = await enrichWithAI('Read', '{}', '{}');
       expect(result).toBeNull();
     });
 
-    it('should handle SDK stream with no result message', async () => {
+    it('should return null when mock returns empty string', async () => {
       delete process.env.AGENTKITS_AI_ENRICHMENT;
-      // Mock that emits messages but none with type=result/subtype=success
-      const mockFn: QueryFunction = () => {
-        return (async function* () {
-          yield { type: 'progress', subtype: 'update' };
-          yield { type: 'done', subtype: 'complete' };
-        })();
-      };
-      _setQueryFunctionForTesting(mockFn);
+      _setRunClaudePrintMockForTesting(() => '');
 
       const result = await enrichWithAI('Read', '{}', '{}');
       expect(result).toBeNull();
     });
 
-    it('should handle SDK stream with result but no text', async () => {
+    it('should return null when mock throws', async () => {
       delete process.env.AGENTKITS_AI_ENRICHMENT;
-      const mockFn: QueryFunction = () => {
-        return (async function* () {
-          yield { type: 'result', subtype: 'success', result: '' };
-        })();
-      };
-      _setQueryFunctionForTesting(mockFn);
+      _setRunClaudePrintMockForTesting(() => { throw new Error('CLI error'); });
 
       const result = await enrichWithAI('Read', '{}', '{}');
       expect(result).toBeNull();
-    });
-
-    it('should handle SDK stream with result=undefined', async () => {
-      delete process.env.AGENTKITS_AI_ENRICHMENT;
-      const mockFn: QueryFunction = () => {
-        return (async function* () {
-          yield { type: 'result', subtype: 'success' };
-        })();
-      };
-      _setQueryFunctionForTesting(mockFn);
-
-      const result = await enrichWithAI('Read', '{}', '{}');
-      expect(result).toBeNull();
-    });
-
-    it('should return null when mock query function throws', async () => {
-      delete process.env.AGENTKITS_AI_ENRICHMENT;
-      const mockFn: QueryFunction = () => {
-        throw new Error('SDK error');
-      };
-      _setQueryFunctionForTesting(mockFn);
-
-      const result = await enrichWithAI('Read', '{}', '{}');
-      expect(result).toBeNull();
-    });
-
-    it('should return null when mock query async iterator throws', async () => {
-      delete process.env.AGENTKITS_AI_ENRICHMENT;
-      const mockFn: QueryFunction = () => {
-        return (async function* () {
-          throw new Error('Stream error');
-        })();
-      };
-      _setQueryFunctionForTesting(mockFn);
-
-      const result = await enrichWithAI('Read', '{}', '{}');
-      expect(result).toBeNull();
-    });
-
-    it('should respect timeout with slow mock', async () => {
-      delete process.env.AGENTKITS_AI_ENRICHMENT;
-      const mockFn: QueryFunction = () => {
-        return (async function* () {
-          // Simulate slow response
-          await new Promise((resolve) => setTimeout(resolve, 5000));
-          yield {
-            type: 'result',
-            subtype: 'success',
-            result: '{"subtitle":"slow","narrative":"slow.","facts":[],"concepts":[]}',
-          };
-        })();
-      };
-      _setQueryFunctionForTesting(mockFn);
-
-      const start = Date.now();
-      const result = await enrichWithAI('Read', '{}', '{}', 100);
-      const elapsed = Date.now() - start;
-
-      expect(result).toBeNull();
-      // Should resolve in ~100ms, not 5000ms
-      expect(elapsed).toBeLessThan(1000);
     });
 
     it('should work with AGENTKITS_AI_ENRICHMENT=true and mock', async () => {
@@ -541,7 +441,7 @@ describe('AI Enrichment Module', () => {
         facts: ['5 tests passed'],
         concepts: ['testing'],
       });
-      _setQueryFunctionForTesting(createMockQueryFn(validResponse));
+      _setRunClaudePrintMockForTesting(() => validResponse);
 
       const result = await enrichWithAI('Bash', 'npm test', '5 passed');
       expect(result).not.toBeNull();
@@ -550,27 +450,165 @@ describe('AI Enrichment Module', () => {
 
     it('should still return null when env=false even with mock set', async () => {
       process.env.AGENTKITS_AI_ENRICHMENT = 'false';
-      const validResponse = JSON.stringify({
-        subtitle: 'Test',
-        narrative: 'Test.',
-        facts: [],
-        concepts: [],
-      });
-      _setQueryFunctionForTesting(createMockQueryFn(validResponse));
+      _setRunClaudePrintMockForTesting(() => '{"subtitle":"Test","narrative":"Test.","facts":[],"concepts":[]}');
 
       const result = await enrichWithAI('Read', '{}', '{}');
       expect(result).toBeNull();
     });
 
-    it('should parse markdown-fenced response from mock SDK', async () => {
+    it('should parse markdown-fenced response from mock CLI', async () => {
       delete process.env.AGENTKITS_AI_ENRICHMENT;
       const fencedResponse =
         '```json\n{"subtitle":"Fenced","narrative":"Fenced response.","facts":["f1"],"concepts":["c1"]}\n```';
-      _setQueryFunctionForTesting(createMockQueryFn(fencedResponse));
+      _setRunClaudePrintMockForTesting(() => fencedResponse);
 
       const result = await enrichWithAI('Read', '{}', '{}');
       expect(result).not.toBeNull();
       expect(result!.subtitle).toBe('Fenced');
+    });
+
+    it('should pass prompt to mock', async () => {
+      delete process.env.AGENTKITS_AI_ENRICHMENT;
+      let capturedPrompt = '';
+      _setRunClaudePrintMockForTesting((prompt) => {
+        capturedPrompt = prompt;
+        return JSON.stringify({
+          subtitle: 'Test',
+          narrative: 'Test.',
+          facts: [],
+          concepts: [],
+        });
+      });
+
+      await enrichWithAI('Read', '{"file_path":"test.ts"}', 'content');
+      expect(capturedPrompt).toContain('Tool: Read');
+      expect(capturedPrompt).toContain('test.ts');
+    });
+  });
+
+  describe('parseSummaryResponse', () => {
+    it('should parse valid summary JSON', () => {
+      const json = JSON.stringify({
+        completed: 'Fixed a bug in the parser.',
+        nextSteps: 'Run integration tests.',
+      });
+      const result = parseSummaryResponse(json);
+      expect(result).not.toBeNull();
+      expect(result!.completed).toBe('Fixed a bug in the parser.');
+      expect(result!.nextSteps).toBe('Run integration tests.');
+    });
+
+    it('should accept nextSteps as array', () => {
+      const json = JSON.stringify({
+        completed: 'Fixed a bug.',
+        nextSteps: ['Run tests', 'Deploy to staging'],
+      });
+      const result = parseSummaryResponse(json);
+      expect(result).not.toBeNull();
+      expect(result!.nextSteps).toBe('Run tests; Deploy to staging');
+    });
+
+    it('should default nextSteps to None when missing', () => {
+      const json = JSON.stringify({
+        completed: 'All done.',
+      });
+      const result = parseSummaryResponse(json);
+      expect(result).not.toBeNull();
+      expect(result!.nextSteps).toBe('None');
+    });
+
+    it('should return null when completed is not a string', () => {
+      const json = JSON.stringify({
+        completed: 123,
+        nextSteps: 'Test',
+      });
+      const result = parseSummaryResponse(json);
+      expect(result).toBeNull();
+    });
+
+    it('should truncate completed to 1000 chars', () => {
+      const json = JSON.stringify({
+        completed: 'A'.repeat(1500),
+        nextSteps: 'Test',
+      });
+      const result = parseSummaryResponse(json);
+      expect(result).not.toBeNull();
+      expect(result!.completed.length).toBe(1000);
+    });
+
+    it('should truncate nextSteps to 500 chars', () => {
+      const json = JSON.stringify({
+        completed: 'Done.',
+        nextSteps: 'B'.repeat(600),
+      });
+      const result = parseSummaryResponse(json);
+      expect(result).not.toBeNull();
+      expect(result!.nextSteps.length).toBe(500);
+    });
+
+    it('should strip markdown fences', () => {
+      const json = '```json\n{"completed":"Done.","nextSteps":"None"}\n```';
+      const result = parseSummaryResponse(json);
+      expect(result).not.toBeNull();
+      expect(result!.completed).toBe('Done.');
+    });
+
+    it('should return null for invalid JSON', () => {
+      expect(parseSummaryResponse('not json')).toBeNull();
+    });
+  });
+
+  describe('buildSummaryPrompt', () => {
+    it('should include template summary and assistant message', () => {
+      const prompt = buildSummaryPrompt('Request: Fix bug', 'I fixed the bug.');
+      expect(prompt).toContain('Template Summary');
+      expect(prompt).toContain('Request: Fix bug');
+      expect(prompt).toContain('Last Assistant Message');
+      expect(prompt).toContain('I fixed the bug.');
+    });
+
+    it('should truncate long inputs', () => {
+      const longTemplate = 'T'.repeat(5000);
+      const longMessage = 'M'.repeat(5000);
+      const prompt = buildSummaryPrompt(longTemplate, longMessage);
+      // Should contain truncated versions (3000 chars each)
+      expect(prompt.length).toBeLessThan(10000);
+    });
+  });
+
+  describe('enrichSummaryWithAI with mock CLI', () => {
+    afterEach(() => {
+      _setRunClaudePrintMockForTesting(null);
+    });
+
+    it('should return enriched summary on success', async () => {
+      delete process.env.AGENTKITS_AI_ENRICHMENT;
+      const validResponse = JSON.stringify({
+        completed: 'Fixed the parser bug and verified with tests.',
+        nextSteps: 'None',
+      });
+      _setRunClaudePrintMockForTesting(() => validResponse);
+
+      const result = await enrichSummaryWithAI('Request: Fix bug', 'I fixed the parser.');
+      expect(result).not.toBeNull();
+      expect(result!.completed).toBe('Fixed the parser bug and verified with tests.');
+      expect(result!.nextSteps).toBe('None');
+    });
+
+    it('should return null when CLI unavailable', async () => {
+      delete process.env.AGENTKITS_AI_ENRICHMENT;
+      _setCliAvailableForTesting(false);
+
+      const result = await enrichSummaryWithAI('Request: Fix bug', 'I fixed it.');
+      expect(result).toBeNull();
+    });
+
+    it('should return null when CLI returns invalid response', async () => {
+      delete process.env.AGENTKITS_AI_ENRICHMENT;
+      _setRunClaudePrintMockForTesting(() => 'not json');
+
+      const result = await enrichSummaryWithAI('Request: Fix bug', 'I fixed it.');
+      expect(result).toBeNull();
     });
   });
 
@@ -579,7 +617,7 @@ describe('AI Enrichment Module', () => {
       delete process.env.AGENTKITS_AI_ENRICHMENT;
       // Should gracefully handle any input without throwing
       const result = await enrichWithAI('InvalidTool', 'not json', 'not json');
-      // May return enriched data if SDK is available, or null if not
+      // May return enriched data if CLI is available, or null if not
       if (result !== null) {
         expect(typeof result.subtitle).toBe('string');
         expect(typeof result.narrative).toBe('string');
@@ -596,19 +634,3 @@ describe('AI Enrichment Module', () => {
     });
   });
 });
-
-/**
- * Helper: Create a mock QueryFunction that yields a single result message
- */
-function createMockQueryFn(resultText: string): QueryFunction {
-  return () => {
-    return (async function* () {
-      yield {
-        type: 'result',
-        subtype: 'success',
-        result: resultText,
-        total_cost_usd: 0.001,
-      };
-    })();
-  };
-}

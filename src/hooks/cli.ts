@@ -15,6 +15,7 @@
  *   summarize     - Stop: generate session summary
  *   user-message  - SessionStart: display status to user (stderr)
  *   enrich <id> [cwd] - Background: AI-enrich a stored observation
+ *   enrich-summary <sessionId> <cwd> <transcriptPath> - Background: AI-enrich session summary
  *
  * @module @agentkits/memory/hooks/cli
  */
@@ -69,7 +70,7 @@ async function main(): Promise<void> {
 
     if (!event) {
       console.error('Usage: agentkits-memory-hook <event>');
-      console.error('Events: context, session-init, observation, summarize, user-message, enrich');
+      console.error('Events: context, session-init, observation, summarize, user-message, enrich, enrich-summary, embed-session');
       process.exit(1);
     }
 
@@ -81,6 +82,35 @@ async function main(): Promise<void> {
         const svc = new MemoryHookService(cwdArg);
         await svc.initialize();
         await svc.enrichObservation(obsId);
+        await svc.shutdown();
+      }
+      process.exit(0);
+    }
+
+    // Handle 'enrich-summary' command (no stdin, runs as background process)
+    if (event === 'enrich-summary') {
+      const sessionId = process.argv[3];
+      const cwdArg = process.argv[4] || process.cwd();
+      const transcriptPath = process.argv[5];
+      if (sessionId && transcriptPath) {
+        const svc = new MemoryHookService(cwdArg);
+        await svc.initialize();
+        await svc.enrichSessionSummary(sessionId, transcriptPath);
+        await svc.shutdown();
+      }
+      process.exit(0);
+    }
+
+    // Handle 'embed-session' command (no stdin, runs as background process)
+    // Processes the SQLite embedding queue + any records missing embeddings.
+    // Loads model once, processes sequentially with batch limit. Usage: embed-session <cwd>
+    if (event === 'embed-session') {
+      const cwdArg = process.argv[3] || process.cwd();
+      const svc = new MemoryHookService(cwdArg);
+      await svc.initialize();
+      try {
+        await svc.processEmbeddingQueue();
+      } finally {
         await svc.shutdown();
       }
       process.exit(0);
@@ -126,11 +156,16 @@ async function main(): Promise<void> {
     console.log(formatResponse(result));
 
   } catch (error) {
-    // Log error to stderr
+    // Log error to stderr (visible in verbose mode with exit 0)
     console.error('[AgentKits Memory] CLI error:', error);
 
-    // Output standard response (don't block Claude)
+    // Output standard response so Claude can continue
     console.log(JSON.stringify(STANDARD_RESPONSE));
+
+    // MUST exit 0: exit code 2 would block UserPromptSubmit (erases prompt)
+    // and Stop (prevents Claude from stopping). Memory errors should never
+    // disrupt Claude's operation.
+    process.exit(0);
   }
 }
 

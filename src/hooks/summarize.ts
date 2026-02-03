@@ -7,12 +7,15 @@
  * @module @agentkits/memory/hooks/summarize
  */
 
+import { spawn } from 'node:child_process';
+import * as path from 'node:path';
 import {
   NormalizedHookInput,
   HookResult,
   EventHandler,
 } from './types.js';
 import { MemoryHookService } from './service.js';
+import { isAIEnrichmentEnabled } from './ai-enrichment.js';
 
 /**
  * Summarize Hook - Stop Event
@@ -65,6 +68,26 @@ export class SummarizeHook implements EventHandler {
       // Complete the session with text summary (legacy field)
       const textSummary = await this.service.generateSummary(input.sessionId);
       await this.service.completeSession(input.sessionId, textSummary);
+
+      // Ensure embedding worker is running to process queued items
+      this.service.ensureEmbeddingWorkerRunning(input.cwd);
+
+      // Fire-and-forget: spawn detached process for AI summary enrichment
+      if (isAIEnrichmentEnabled() && input.transcriptPath) {
+        try {
+          const cliPath = path.resolve(input.cwd, 'dist/hooks/cli.js');
+          const child = spawn('node', [
+            cliPath, 'enrich-summary', input.sessionId, input.cwd, input.transcriptPath,
+          ], {
+            detached: true,
+            stdio: 'ignore',
+            env: { ...process.env },
+          });
+          child.unref();
+        } catch {
+          // Silently ignore — template summary already saved
+        }
+      }
 
       // Shutdown service
       await this.service.shutdown();

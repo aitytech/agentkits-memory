@@ -338,7 +338,7 @@ export function getProjectName(cwd: string): string {
  */
 export function getObservationType(toolName: string): ObservationType {
   const readTools = ['Read', 'Glob', 'Grep', 'LS'];
-  const writeTools = ['Write', 'Edit', 'NotebookEdit'];
+  const writeTools = ['Write', 'Edit', 'MultiEdit', 'NotebookEdit'];
   const executeTools = ['Bash', 'Task', 'Skill'];
   const searchTools = ['WebSearch', 'WebFetch'];
 
@@ -388,6 +388,7 @@ export function generateObservationTitle(toolName: string, toolInput: unknown): 
       case 'Write':
         return `Write ${input?.file_path || input?.path || 'file'}`;
       case 'Edit':
+      case 'MultiEdit':
         return `Edit ${input?.file_path || input?.path || 'file'}`;
       case 'Bash':
         const cmd = input?.command || '';
@@ -425,6 +426,7 @@ export function generateObservationSubtitle(toolName: string, toolInput: unknown
       case 'Write':
         return fileName ? `Creating/updating ${fileName}` : 'Writing file';
       case 'Edit':
+      case 'MultiEdit':
         return fileName ? `Modifying ${fileName}` : 'Editing file';
       case 'Bash': {
         const cmd = (input?.command || '').split(/\s+/)[0];
@@ -469,7 +471,8 @@ export function generateObservationNarrative(
         return `Read the contents of ${filePath || 'a file'} to understand the existing code structure.`;
       case 'Write':
         return `Wrote ${filePath || 'a file'} with new or updated content.`;
-      case 'Edit': {
+      case 'Edit':
+      case 'MultiEdit': {
         const oldStr = input?.old_string ? `"${input.old_string.substring(0, 40)}..."` : 'code';
         return `Edited ${filePath || 'a file'}, replacing ${oldStr} with updated content.`;
       }
@@ -520,6 +523,7 @@ export function extractFacts(toolName: string, toolInput: unknown, toolResponse:
         if (filePath) facts.push(`File created/updated: ${filePath}`);
         break;
       case 'Edit':
+      case 'MultiEdit':
         if (filePath) facts.push(`File modified: ${filePath}`);
         if (input?.old_string) facts.push(`Code replaced in ${filePath.split(/[/\\]/).pop() || 'file'}`);
         break;
