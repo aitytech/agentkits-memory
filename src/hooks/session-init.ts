@@ -53,6 +53,15 @@ export class SessionInitHook implements EventHandler {
         input.prompt
       );
 
+      // Save every user prompt (not just the first)
+      if (input.prompt) {
+        await this.service.saveUserPrompt(
+          input.sessionId,
+          input.project,
+          input.prompt
+        );
+      }
+
       return {
         continue: true,
         suppressOutput: true,

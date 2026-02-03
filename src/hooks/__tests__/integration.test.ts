@@ -210,9 +210,9 @@ describe('Hook System Integration', () => {
       expect(contextResult.continue).toBe(true);
       expect(contextResult.suppressOutput).toBe(false);
       expect(contextResult.additionalContext).toBeDefined();
-      expect(contextResult.additionalContext).toContain('Previous Sessions');
+      expect(contextResult.additionalContext).toContain('Previous Session Summaries');
       expect(contextResult.additionalContext).toContain('Recent Activity');
-      expect(contextResult.additionalContext).toContain('Write');
+      expect(contextResult.additionalContext).toContain('auth.ts');
     });
 
     it('should handle multiple projects independently', async () => {

@@ -10,6 +10,11 @@ import {
   getProjectName,
   getObservationType,
   generateObservationTitle,
+  generateObservationSubtitle,
+  generateObservationNarrative,
+  extractFilePaths,
+  extractFacts,
+  extractConcepts,
   truncate,
   parseHookInput,
   formatResponse,
@@ -336,6 +341,218 @@ describe('Hook Types Utilities', () => {
     it('should have correct structure', () => {
       expect(STANDARD_RESPONSE.continue).toBe(true);
       expect(STANDARD_RESPONSE.suppressOutput).toBe(true);
+    });
+  });
+
+  describe('extractFilePaths', () => {
+    it('should extract read file paths', () => {
+      const result = extractFilePaths('Read', { file_path: '/path/to/file.ts' });
+      expect(result.filesRead).toEqual(['/path/to/file.ts']);
+      expect(result.filesModified).toEqual([]);
+    });
+
+    it('should extract write file paths', () => {
+      const result = extractFilePaths('Write', { file_path: '/path/to/file.ts' });
+      expect(result.filesRead).toEqual([]);
+      expect(result.filesModified).toEqual(['/path/to/file.ts']);
+    });
+
+    it('should extract edit file paths', () => {
+      const result = extractFilePaths('Edit', { file_path: '/path/to/file.ts' });
+      expect(result.filesRead).toEqual([]);
+      expect(result.filesModified).toEqual(['/path/to/file.ts']);
+    });
+
+    it('should use path fallback', () => {
+      const result = extractFilePaths('Read', { path: '/path/to/dir' });
+      expect(result.filesRead).toEqual(['/path/to/dir']);
+    });
+
+    it('should return empty for Bash', () => {
+      const result = extractFilePaths('Bash', { command: 'npm test' });
+      expect(result.filesRead).toEqual([]);
+      expect(result.filesModified).toEqual([]);
+    });
+
+    it('should handle null input', () => {
+      const result = extractFilePaths('Read', null);
+      expect(result.filesRead).toEqual([]);
+      expect(result.filesModified).toEqual([]);
+    });
+
+    it('should handle string input', () => {
+      const result = extractFilePaths('Read', JSON.stringify({ file_path: '/path/file.ts' }));
+      expect(result.filesRead).toEqual(['/path/file.ts']);
+    });
+  });
+
+  describe('generateObservationSubtitle', () => {
+    it('should generate subtitle for Read', () => {
+      const subtitle = generateObservationSubtitle('Read', { file_path: '/src/index.ts' });
+      expect(subtitle).toBe('Examining index.ts');
+    });
+
+    it('should generate subtitle for Write', () => {
+      const subtitle = generateObservationSubtitle('Write', { file_path: '/src/auth.ts' });
+      expect(subtitle).toBe('Creating/updating auth.ts');
+    });
+
+    it('should generate subtitle for Edit', () => {
+      const subtitle = generateObservationSubtitle('Edit', { file_path: '/src/utils.ts' });
+      expect(subtitle).toBe('Modifying utils.ts');
+    });
+
+    it('should generate subtitle for Bash with known commands', () => {
+      expect(generateObservationSubtitle('Bash', { command: 'npm test' })).toBe('Running npm command');
+      expect(generateObservationSubtitle('Bash', { command: 'git status' })).toBe('Git operation');
+      expect(generateObservationSubtitle('Bash', { command: 'docker build .' })).toBe('Docker operation');
+    });
+
+    it('should generate subtitle for Glob', () => {
+      const subtitle = generateObservationSubtitle('Glob', { pattern: '**/*.ts' });
+      expect(subtitle).toBe('Searching for **/*.ts pattern');
+    });
+
+    it('should generate subtitle for Grep', () => {
+      const subtitle = generateObservationSubtitle('Grep', { pattern: 'function' });
+      expect(subtitle).toBe('Searching code for "function"');
+    });
+
+    it('should generate subtitle for Task', () => {
+      const subtitle = generateObservationSubtitle('Task', { subagent_type: 'Explore' });
+      expect(subtitle).toBe('Delegating to Explore');
+    });
+
+    it('should generate subtitle for WebSearch', () => {
+      const subtitle = generateObservationSubtitle('WebSearch', { query: 'typescript best practices' });
+      expect(subtitle).toContain('typescript best practices');
+    });
+
+    it('should handle unknown tools', () => {
+      const subtitle = generateObservationSubtitle('CustomTool', {});
+      expect(subtitle).toBe('Using CustomTool tool');
+    });
+  });
+
+  describe('generateObservationNarrative', () => {
+    it('should generate narrative for Read', () => {
+      const narrative = generateObservationNarrative('Read', { file_path: '/src/index.ts' });
+      expect(narrative).toContain('/src/index.ts');
+      expect(narrative).toContain('Read');
+    });
+
+    it('should generate narrative for Write', () => {
+      const narrative = generateObservationNarrative('Write', { file_path: '/src/new.ts' });
+      expect(narrative).toContain('/src/new.ts');
+      expect(narrative).toContain('Wrote');
+    });
+
+    it('should generate narrative for Bash test commands', () => {
+      const narrative = generateObservationNarrative('Bash', { command: 'npm test' });
+      expect(narrative).toContain('test');
+    });
+
+    it('should generate narrative for Bash build commands', () => {
+      const narrative = generateObservationNarrative('Bash', { command: 'tsc' });
+      expect(narrative).toContain('Built');
+    });
+
+    it('should generate narrative for Grep', () => {
+      const narrative = generateObservationNarrative('Grep', { pattern: 'TODO', path: 'src' });
+      expect(narrative).toContain('TODO');
+      expect(narrative).toContain('src');
+    });
+
+    it('should handle unknown tools', () => {
+      const narrative = generateObservationNarrative('CustomTool', {});
+      expect(narrative).toBe('Used CustomTool tool.');
+    });
+  });
+
+  describe('extractFacts', () => {
+    it('should extract facts from Read', () => {
+      const facts = extractFacts('Read', { file_path: '/src/index.ts' }, {});
+      expect(facts).toContain('File read: /src/index.ts');
+    });
+
+    it('should extract facts from Write', () => {
+      const facts = extractFacts('Write', { file_path: '/src/new.ts' }, {});
+      expect(facts).toContain('File created/updated: /src/new.ts');
+    });
+
+    it('should extract facts from Edit', () => {
+      const facts = extractFacts('Edit', { file_path: '/src/index.ts', old_string: 'old code' }, {});
+      expect(facts.length).toBe(2);
+      expect(facts[0]).toContain('/src/index.ts');
+      expect(facts[1]).toContain('replaced');
+    });
+
+    it('should extract facts from Bash with test results', () => {
+      const facts = extractFacts('Bash', { command: 'npm test' }, { stdout: '5 tests passed' });
+      expect(facts.some(f => f.includes('npm test'))).toBe(true);
+      expect(facts.some(f => f === 'Tests passed')).toBe(true);
+    });
+
+    it('should extract facts from Bash with errors', () => {
+      const facts = extractFacts('Bash', { command: 'tsc' }, { stdout: 'Error: TS2304' });
+      expect(facts.some(f => f === 'Errors encountered')).toBe(true);
+    });
+
+    it('should extract facts from WebSearch', () => {
+      const facts = extractFacts('WebSearch', { query: 'typescript tutorial' }, {});
+      expect(facts).toContain('Web search: typescript tutorial');
+    });
+
+    it('should handle null inputs', () => {
+      const facts = extractFacts('Read', null, null);
+      expect(facts).toEqual([]);
+    });
+  });
+
+  describe('extractConcepts', () => {
+    it('should extract concepts from TypeScript files', () => {
+      const concepts = extractConcepts('Read', { file_path: 'src/hooks/types.ts' });
+      expect(concepts).toContain('typescript');
+      expect(concepts).toContain('hooks');
+    });
+
+    it('should extract concepts from test files', () => {
+      const concepts = extractConcepts('Read', { file_path: 'src/__tests__/index.test.ts' });
+      expect(concepts).toContain('testing');
+      expect(concepts).toContain('typescript');
+    });
+
+    it('should extract concepts from Bash commands', () => {
+      const concepts = extractConcepts('Bash', { command: 'npm test' });
+      expect(concepts).toContain('testing');
+      expect(concepts).toContain('package-management');
+    });
+
+    it('should extract concepts from git commands', () => {
+      const concepts = extractConcepts('Bash', { command: 'git status' });
+      expect(concepts).toContain('version-control');
+    });
+
+    it('should extract concepts from WebSearch', () => {
+      const concepts = extractConcepts('WebSearch', {});
+      expect(concepts).toContain('research');
+    });
+
+    it('should extract concepts from Task', () => {
+      const concepts = extractConcepts('Task', { subagent_type: 'Explore' });
+      expect(concepts).toContain('delegation');
+      expect(concepts).toContain('Explore');
+    });
+
+    it('should deduplicate concepts', () => {
+      const concepts = extractConcepts('Bash', { command: 'npm test && npm test' });
+      const unique = new Set(concepts);
+      expect(concepts.length).toBe(unique.size);
+    });
+
+    it('should handle null inputs', () => {
+      const concepts = extractConcepts('Read', null);
+      expect(concepts).toEqual([]);
     });
   });
 });

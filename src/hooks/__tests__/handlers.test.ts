@@ -85,11 +85,28 @@ describe('Hook Handlers', () => {
       expect(result.additionalContext).toBeUndefined();
     });
 
-    it('should return context for existing project', async () => {
-      // Set up existing data
+    it('should return context with prompts and summaries', async () => {
+      // Set up session with prompts, observations, and structured summary
       const service = new MemoryHookService(TEST_DIR);
-      await service.initSession('old-session', 'test-project', 'Previous task');
+      await service.initSession('old-session', 'test-project', 'Implement auth');
+      await service.saveUserPrompt('old-session', 'test-project', 'Implement auth');
+      await service.saveUserPrompt('old-session', 'test-project', 'Add tests');
       await service.storeObservation('old-session', 'test-project', 'Read', { file_path: 'file.ts' }, {}, TEST_DIR);
+      await service.storeObservation('old-session', 'test-project', 'Write', { file_path: 'auth.ts' }, {}, TEST_DIR);
+
+      // Save structured summary
+      await service.saveSessionSummary({
+        sessionId: 'old-session',
+        project: 'test-project',
+        request: '[#1] Implement auth → [#2] Add tests',
+        completed: '2 file(s) modified',
+        filesRead: ['file.ts'],
+        filesModified: ['auth.ts'],
+        nextSteps: 'Deploy to staging',
+        notes: '',
+        promptNumber: 2,
+      });
+
       await service.completeSession('old-session', 'Done');
       await service.shutdown();
 
@@ -103,7 +120,11 @@ describe('Hook Handlers', () => {
       expect(result.suppressOutput).toBe(false);
       expect(result.additionalContext).toBeDefined();
       expect(result.additionalContext).toContain('# Memory Context');
-      expect(result.additionalContext).toContain('test-project');
+      expect(result.additionalContext).toContain('Previous Session Summaries');
+      expect(result.additionalContext).toContain('Implement auth');
+      expect(result.additionalContext).toContain('Recent User Prompts');
+      expect(result.additionalContext).toContain('Add tests');
+      expect(result.additionalContext).toContain('auth.ts');
     });
 
     it('should handle errors gracefully', async () => {
@@ -144,24 +165,53 @@ describe('Hook Handlers', () => {
       expect(session?.prompt).toBe('Hello Claude');
     });
 
-    it('should not overwrite existing session', async () => {
-      // Create initial session
+    it('should save all user prompts (not just first)', async () => {
+      // First prompt
       const hook1 = trackHook(createSessionInitHook(TEST_DIR));
       await hook1.execute(createTestInput({ prompt: 'First prompt' }));
       await hook1.shutdown();
 
-      // Try to re-init with different prompt
+      // Second prompt (same session)
       const hook2 = trackHook(createSessionInitHook(TEST_DIR));
       await hook2.execute(createTestInput({ prompt: 'Second prompt' }));
       await hook2.shutdown();
 
-      // Verify original prompt preserved
+      // Third prompt
+      const hook3 = trackHook(createSessionInitHook(TEST_DIR));
+      await hook3.execute(createTestInput({ prompt: 'Third prompt' }));
+      await hook3.shutdown();
+
+      // Verify session prompt still has first prompt
       const service = new MemoryHookService(TEST_DIR);
       await service.initialize();
       const session = service.getSession('test-session-123');
-      await service.shutdown();
 
       expect(session?.prompt).toBe('First prompt');
+
+      // Verify ALL prompts are saved in user_prompts table
+      const prompts = await service.getSessionPrompts('test-session-123');
+      await service.shutdown();
+
+      expect(prompts.length).toBe(3);
+      expect(prompts[0].promptNumber).toBe(1);
+      expect(prompts[0].promptText).toBe('First prompt');
+      expect(prompts[1].promptNumber).toBe(2);
+      expect(prompts[1].promptText).toBe('Second prompt');
+      expect(prompts[2].promptNumber).toBe(3);
+      expect(prompts[2].promptText).toBe('Third prompt');
+    });
+
+    it('should not save prompt when prompt is empty', async () => {
+      const hook = trackHook(createSessionInitHook(TEST_DIR));
+      await hook.execute(createTestInput({ prompt: undefined }));
+      await hook.shutdown();
+
+      const service = new MemoryHookService(TEST_DIR);
+      await service.initialize();
+      const prompts = await service.getSessionPrompts('test-session-123');
+      await service.shutdown();
+
+      expect(prompts.length).toBe(0);
     });
 
     it('should handle errors gracefully', async () => {
@@ -179,10 +229,10 @@ describe('Hook Handlers', () => {
   });
 
   describe('ObservationHook', () => {
-    it('should store observation', async () => {
-      // Initialize session first
+    it('should store observation with prompt number', async () => {
+      // Initialize session and save a prompt
       const initHook = trackHook(createSessionInitHook(TEST_DIR));
-      await initHook.execute(createTestInput());
+      await initHook.execute(createTestInput({ prompt: 'Fix the bug' }));
       await initHook.shutdown();
 
       // Store observation
@@ -199,7 +249,7 @@ describe('Hook Handlers', () => {
       expect(result.continue).toBe(true);
       expect(result.suppressOutput).toBe(true);
 
-      // Verify observation was stored
+      // Verify observation was stored with prompt number
       const service = new MemoryHookService(TEST_DIR);
       await service.initialize();
       const observations = await service.getSessionObservations('test-session-123');
@@ -207,6 +257,7 @@ describe('Hook Handlers', () => {
 
       expect(observations.length).toBe(1);
       expect(observations[0].toolName).toBe('Read');
+      expect(observations[0].promptNumber).toBe(1);
     });
 
     it('should skip if no tool name', async () => {
@@ -284,15 +335,17 @@ describe('Hook Handlers', () => {
   });
 
   describe('SummarizeHook', () => {
-    it('should complete session with summary', async () => {
-      // Set up session with observations
+    it('should complete session with structured summary', async () => {
+      // Set up session with prompts and observations
       const service = new MemoryHookService(TEST_DIR);
-      await service.initSession('test-session-123', 'test-project');
-      await service.storeObservation('test-session-123', 'test-project', 'Read', { file_path: 'a.ts' }, {}, TEST_DIR);
-      await service.storeObservation('test-session-123', 'test-project', 'Write', { file_path: 'b.ts' }, {}, TEST_DIR);
+      await service.initSession('test-session-123', 'test-project', 'Fix authentication bug');
+      await service.saveUserPrompt('test-session-123', 'test-project', 'Fix authentication bug');
+      await service.storeObservation('test-session-123', 'test-project', 'Read', { file_path: 'auth.ts' }, {}, TEST_DIR);
+      await service.storeObservation('test-session-123', 'test-project', 'Write', { file_path: 'auth.ts' }, {}, TEST_DIR);
+      await service.storeObservation('test-session-123', 'test-project', 'Bash', { command: 'npm test' }, {}, TEST_DIR);
       await service.shutdown();
 
-      // Run summarize hook (it already calls shutdown internally)
+      // Run summarize hook
       const hook = trackHook(createSummarizeHook(TEST_DIR));
       const input = createTestInput();
 
@@ -301,15 +354,26 @@ describe('Hook Handlers', () => {
       expect(result.continue).toBe(true);
       expect(result.suppressOutput).toBe(true);
 
-      // Verify session was completed
+      // Verify session was completed with text summary
       const service2 = new MemoryHookService(TEST_DIR);
       await service2.initialize();
       const session = service2.getSession('test-session-123');
-      await service2.shutdown();
 
       expect(session?.status).toBe('completed');
       expect(session?.summary).toBeDefined();
-      expect(session?.summary).toContain('file');
+      expect(session?.summary).toContain('Request:');
+      expect(session?.summary).toContain('Fix authentication bug');
+
+      // Verify structured summary was saved
+      const summaries = await service2.getRecentSummaries('test-project');
+      await service2.shutdown();
+
+      expect(summaries.length).toBe(1);
+      expect(summaries[0].request).toContain('Fix authentication bug');
+      expect(summaries[0].filesRead).toContain('auth.ts');
+      expect(summaries[0].filesModified).toContain('auth.ts');
+      expect(summaries[0].completed).toContain('file(s) modified');
+      expect(summaries[0].notes).toContain('npm test');
     });
 
     it('should handle non-existent session', async () => {

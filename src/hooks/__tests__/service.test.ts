@@ -47,7 +47,7 @@ describe('MemoryHookService', () => {
       // Let's verify by adding some data and persisting
       await service.initSession('test', 'test-project');
 
-      const dbPath = path.join(TEST_DIR, '.claude/memory', 'hooks.db');
+      const dbPath = path.join(TEST_DIR, '.claude/memory', 'memory.db');
       expect(existsSync(dbPath)).toBe(true);
     });
 
@@ -386,7 +386,7 @@ describe('MemoryHookService', () => {
 
       const summary = await service.generateSummary('session-1');
 
-      expect(summary).toBe('No activity recorded in this session.');
+      expect(summary).toContain('No activity recorded');
     });
 
     it('should list files in summary', async () => {
@@ -420,7 +420,7 @@ describe('MemoryHookService', () => {
 
       const summary = await service.generateSummary('session-1');
 
-      expect(summary).toContain('7 files touched');
+      expect(summary).toContain('7 file(s) modified');
     });
   });
 
@@ -432,7 +432,7 @@ describe('MemoryHookService', () => {
       await service.shutdown();
 
       // Delete the database file
-      const dbPath = path.join(TEST_DIR, '.claude/memory', 'hooks.db');
+      const dbPath = path.join(TEST_DIR, '.claude/memory', 'memory.db');
       expect(existsSync(dbPath)).toBe(true);
       rmSync(dbPath);
       expect(existsSync(dbPath)).toBe(false);

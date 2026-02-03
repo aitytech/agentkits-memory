@@ -45,7 +45,7 @@ let _searchEngine: HybridSearchEngine | null = null;
 let _db: BetterDatabase | null = null;
 
 /**
- * Get direct database access
+ * Get direct database access (memory.db)
  */
 function getDatabase(): BetterDatabase {
   if (_db) return _db;
@@ -1000,6 +1000,20 @@ function getHTML(): string {
       </div>
     </header>
 
+    <!-- Tab Navigation -->
+    <div class="tab-nav" style="display:flex;gap:4px;margin-bottom:24px;border-bottom:1px solid var(--border);padding-bottom:0;">
+      <button class="tab-btn active" onclick="switchTab('memories')" id="tab-memories"
+        style="padding:10px 20px;background:none;border:none;color:var(--text-primary);cursor:pointer;border-bottom:2px solid var(--accent);font-size:14px;font-weight:500;">
+        Memories
+      </button>
+      <button class="tab-btn" onclick="switchTab('sessions')" id="tab-sessions"
+        style="padding:10px 20px;background:none;border:none;color:var(--text-secondary);cursor:pointer;border-bottom:2px solid transparent;font-size:14px;font-weight:500;">
+        Sessions
+      </button>
+    </div>
+
+    <!-- Memories Tab -->
+    <div id="memories-tab">
     <div id="stats-container" class="stats-grid"></div>
     <div id="namespace-pills" class="namespace-pills"></div>
 
@@ -1020,6 +1034,15 @@ function getHTML(): string {
     </div>
 
     <div id="pagination" class="pagination"></div>
+    </div><!-- /memories-tab -->
+
+    <!-- Sessions Tab -->
+    <div id="sessions-tab" style="display:none;">
+      <div class="stats-grid" id="sessions-stats"></div>
+      <div id="sessions-feed" class="entries-list">
+        <div style="text-align:center;color:var(--text-secondary);padding:40px;">Loading sessions...</div>
+      </div>
+    </div>
   </div>
 
   <!-- Detail Modal -->
@@ -1626,6 +1649,154 @@ function getHTML(): string {
       }
     });
 
+    // Tab switching
+    function switchTab(tab) {
+      document.getElementById('memories-tab').style.display = tab === 'memories' ? '' : 'none';
+      document.getElementById('sessions-tab').style.display = tab === 'sessions' ? '' : 'none';
+
+      document.querySelectorAll('.tab-btn').forEach(btn => {
+        btn.style.borderBottomColor = 'transparent';
+        btn.style.color = 'var(--text-secondary)';
+      });
+      const activeBtn = document.getElementById('tab-' + tab);
+      activeBtn.style.borderBottomColor = 'var(--accent)';
+      activeBtn.style.color = 'var(--text-primary)';
+
+      if (tab === 'sessions') loadSessions();
+    }
+
+    // Sessions feed
+    async function loadSessions() {
+      const feed = document.getElementById('sessions-feed');
+      const statsEl = document.getElementById('sessions-stats');
+      try {
+        const [sessRes, obsRes] = await Promise.all([
+          fetch('/api/sessions?limit=20'),
+          fetch('/api/observations?limit=50')
+        ]);
+        const data = await sessRes.json();
+        const observations = await obsRes.json();
+
+        // Stats
+        statsEl.innerHTML = \`
+          <div class="stat-card">
+            <div class="stat-label">Sessions</div>
+            <div class="stat-value">\${data.sessions?.length || 0}</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-label">User Prompts</div>
+            <div class="stat-value">\${data.prompts?.length || 0}</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-label">Summaries</div>
+            <div class="stat-value">\${data.summaries?.length || 0}</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-label">Observations</div>
+            <div class="stat-value">\${observations?.length || 0}</div>
+          </div>
+        \`;
+
+        // Build timeline feed (mix prompts, summaries, observations)
+        const items = [];
+
+        for (const p of (data.prompts || [])) {
+          items.push({
+            type: 'prompt',
+            time: p.created_at,
+            sessionId: p.session_id,
+            promptNumber: p.prompt_number,
+            text: p.prompt_text,
+            project: p.project,
+          });
+        }
+
+        for (const s of (data.summaries || [])) {
+          items.push({
+            type: 'summary',
+            time: s.created_at,
+            sessionId: s.session_id,
+            request: s.request,
+            completed: s.completed,
+            filesModified: s.files_modified,
+            nextSteps: s.next_steps,
+            notes: s.notes,
+            project: s.project,
+          });
+        }
+
+        for (const o of observations.slice(0, 30)) {
+          items.push({
+            type: 'observation',
+            time: o.timestamp,
+            sessionId: o.session_id,
+            toolName: o.tool_name,
+            title: o.title,
+            obsType: o.type,
+            promptNumber: o.prompt_number,
+          });
+        }
+
+        items.sort((a, b) => (b.time || 0) - (a.time || 0));
+
+        if (items.length === 0) {
+          feed.innerHTML = '<div style="text-align:center;color:var(--text-secondary);padding:40px;">No session data yet. Hook data will appear here after sessions run.</div>';
+          return;
+        }
+
+        feed.innerHTML = items.map(item => {
+          const time = new Date(item.time).toLocaleString();
+          const sid = (item.sessionId || '').substring(0, 8);
+
+          if (item.type === 'prompt') {
+            return \`<div class="entry-card" style="border-left:3px solid var(--accent);">
+              <div class="entry-header">
+                <span class="entry-type" style="background:#3B82F6;color:white;padding:2px 8px;border-radius:4px;font-size:11px;">PROMPT #\${item.promptNumber || '?'}</span>
+                <span class="entry-meta">\${time} · \${sid}</span>
+              </div>
+              <div class="entry-content" style="margin-top:8px;white-space:pre-wrap;">\${escapeHtml(item.text || '')}</div>
+            </div>\`;
+          }
+
+          if (item.type === 'summary') {
+            let filesStr = '';
+            try { filesStr = JSON.parse(item.filesModified || '[]').join(', '); } catch {}
+            return \`<div class="entry-card" style="border-left:3px solid var(--success);">
+              <div class="entry-header">
+                <span class="entry-type" style="background:#22C55E;color:white;padding:2px 8px;border-radius:4px;font-size:11px;">SUMMARY</span>
+                <span class="entry-meta">\${time} · \${sid}</span>
+              </div>
+              <div style="margin-top:8px;">
+                \${item.request ? '<div><strong>Request:</strong> ' + escapeHtml(item.request) + '</div>' : ''}
+                \${item.completed ? '<div><strong>Completed:</strong> ' + escapeHtml(item.completed) + '</div>' : ''}
+                \${filesStr ? '<div><strong>Files:</strong> ' + escapeHtml(filesStr) + '</div>' : ''}
+                \${item.nextSteps ? '<div><strong>Next:</strong> ' + escapeHtml(item.nextSteps) + '</div>' : ''}
+              </div>
+            </div>\`;
+          }
+
+          // observation
+          const icons = { read: '📖', write: '✏️', execute: '⚡', search: '🔍' };
+          const icon = icons[item.obsType] || '•';
+          return \`<div class="entry-card" style="border-left:3px solid var(--border);padding:12px 16px;">
+            <div style="display:flex;justify-content:space-between;align-items:center;">
+              <span>\${icon} <strong>\${escapeHtml(item.toolName || '')}</strong> \${escapeHtml(item.title || '')}</span>
+              <span style="color:var(--text-muted);font-size:12px;">\${time}\${item.promptNumber ? ' · P#' + item.promptNumber : ''}</span>
+            </div>
+          </div>\`;
+        }).join('');
+
+      } catch (err) {
+        feed.innerHTML = '<div style="text-align:center;color:var(--error);padding:40px;">Error loading sessions: ' + err.message + '</div>';
+      }
+    }
+
+    function escapeHtml(text) {
+      const div = document.createElement('div');
+      div.textContent = text;
+      return div.innerHTML;
+    }
+
     loadData();
   </script>
 </body>
@@ -1935,6 +2106,67 @@ function handleRequest(
           res.writeHead(500);
           res.end(JSON.stringify({ error: error instanceof Error ? error.message : 'Internal error' }));
         });
+      return;
+    }
+
+    // GET sessions data (sessions, prompts, summaries) - all in memory.db now
+    if (url.pathname === '/api/sessions' && method === 'GET') {
+      const limit = parseInt(url.searchParams.get('limit') || '20', 10);
+
+      try {
+        const sessions = db.prepare(`
+          SELECT * FROM sessions ORDER BY started_at DESC LIMIT ?
+        `).all(limit) as Record<string, unknown>[];
+
+        // user_prompts may not exist in older DBs
+        let prompts: Record<string, unknown>[] = [];
+        try {
+          prompts = db.prepare(`
+            SELECT up.*, s.project FROM user_prompts up
+            JOIN sessions s ON s.session_id = up.session_id
+            ORDER BY up.created_at DESC LIMIT ?
+          `).all(limit) as Record<string, unknown>[];
+        } catch { /* table may not exist */ }
+
+        // session_summaries may not exist in older DBs
+        let summaries: Record<string, unknown>[] = [];
+        try {
+          summaries = db.prepare(`
+            SELECT * FROM session_summaries ORDER BY created_at DESC LIMIT ?
+          `).all(limit) as Record<string, unknown>[];
+        } catch { /* table may not exist */ }
+
+        res.writeHead(200);
+        res.end(JSON.stringify({ sessions, prompts, summaries }));
+      } catch (error) {
+        res.writeHead(200);
+        res.end(JSON.stringify({ sessions: [], prompts: [], summaries: [], error: String(error) }));
+      }
+      return;
+    }
+
+    // GET observations from memory.db
+    if (url.pathname === '/api/observations' && method === 'GET') {
+      const limit = parseInt(url.searchParams.get('limit') || '50', 10);
+      const sessionId = url.searchParams.get('session_id') || undefined;
+
+      try {
+        let rows: Record<string, unknown>[];
+        if (sessionId) {
+          rows = db.prepare(`
+            SELECT * FROM observations WHERE session_id = ? ORDER BY timestamp DESC LIMIT ?
+          `).all(sessionId, limit) as Record<string, unknown>[];
+        } else {
+          rows = db.prepare(`
+            SELECT * FROM observations ORDER BY timestamp DESC LIMIT ?
+          `).all(limit) as Record<string, unknown>[];
+        }
+        res.writeHead(200);
+        res.end(JSON.stringify(rows));
+      } catch {
+        res.writeHead(200);
+        res.end(JSON.stringify([]));
+      }
       return;
     }
 

@@ -56,11 +56,15 @@ export class SummarizeHook implements EventHandler {
         };
       }
 
-      // Generate summary from observations
-      const summary = await this.service.generateSummary(input.sessionId);
+      // Generate structured summary from observations + prompts
+      const structured = await this.service.generateStructuredSummary(input.sessionId);
 
-      // Complete the session with summary
-      await this.service.completeSession(input.sessionId, summary);
+      // Save structured summary to session_summaries table (same DB as memories)
+      await this.service.saveSessionSummary(structured);
+
+      // Complete the session with text summary (legacy field)
+      const textSummary = await this.service.generateSummary(input.sessionId);
+      await this.service.completeSession(input.sessionId, textSummary);
 
       // Shutdown service
       await this.service.shutdown();
