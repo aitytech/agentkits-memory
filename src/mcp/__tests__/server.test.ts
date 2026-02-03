@@ -14,6 +14,8 @@ import type {
   MemorySearchArgs,
   MemoryRecallArgs,
   MemoryListArgs,
+  MemoryTimelineArgs,
+  MemoryDetailsArgs,
 } from '../types.js';
 
 // Mock ProjectMemoryService for isolated testing
@@ -32,6 +34,8 @@ describe('MCP Server', () => {
 
       expect(toolNames).toContain('memory_save');
       expect(toolNames).toContain('memory_search');
+      expect(toolNames).toContain('memory_timeline');
+      expect(toolNames).toContain('memory_details');
       expect(toolNames).toContain('memory_recall');
       expect(toolNames).toContain('memory_list');
       expect(toolNames).toContain('memory_status');
@@ -63,7 +67,7 @@ describe('MCP Server', () => {
       });
     });
 
-    describe('memory_search tool', () => {
+    describe('memory_search tool (Progressive Disclosure Layer 1)', () => {
       const searchTool = MEMORY_TOOLS.find(t => t.name === 'memory_search')!;
 
       it('should require query parameter', () => {
@@ -76,6 +80,47 @@ describe('MCP Server', () => {
 
       it('should have limit option', () => {
         expect(searchTool.inputSchema.properties.limit).toBeDefined();
+      });
+
+      it('should describe progressive disclosure workflow in description', () => {
+        expect(searchTool.description).toContain('Step 1/3');
+        expect(searchTool.description).toContain('memory_timeline');
+        expect(searchTool.description).toContain('memory_details');
+      });
+    });
+
+    describe('memory_timeline tool (Progressive Disclosure Layer 2)', () => {
+      const timelineTool = MEMORY_TOOLS.find(t => t.name === 'memory_timeline')!;
+
+      it('should require anchor parameter', () => {
+        expect(timelineTool.inputSchema.required).toContain('anchor');
+      });
+
+      it('should have before and after options', () => {
+        expect(timelineTool.inputSchema.properties.before).toBeDefined();
+        expect(timelineTool.inputSchema.properties.after).toBeDefined();
+      });
+
+      it('should describe as Step 2/3', () => {
+        expect(timelineTool.description).toContain('Step 2/3');
+      });
+    });
+
+    describe('memory_details tool (Progressive Disclosure Layer 3)', () => {
+      const detailsTool = MEMORY_TOOLS.find(t => t.name === 'memory_details')!;
+
+      it('should require ids parameter', () => {
+        expect(detailsTool.inputSchema.required).toContain('ids');
+      });
+
+      it('should have ids as array type', () => {
+        const idsProp = detailsTool.inputSchema.properties.ids;
+        expect(idsProp.type).toBe('array');
+        expect(idsProp.items).toEqual({ type: 'string' });
+      });
+
+      it('should describe as Step 3/3', () => {
+        expect(detailsTool.description).toContain('Step 3/3');
       });
     });
 
@@ -176,6 +221,39 @@ describe('MCP Server', () => {
 
       expect(args.category).toBe('error');
       expect(args.limit).toBe(5);
+    });
+
+    it('MemoryTimelineArgs should accept valid arguments', () => {
+      const args: MemoryTimelineArgs = {
+        anchor: 'memory-123',
+        before: 30,
+        after: 30,
+      };
+
+      expect(args.anchor).toBe('memory-123');
+      expect(args.before).toBe(30);
+      expect(args.after).toBe(30);
+    });
+
+    it('MemoryTimelineArgs should work with minimal arguments', () => {
+      const args: MemoryTimelineArgs = {
+        anchor: 'memory-456',
+      };
+
+      expect(args.anchor).toBe('memory-456');
+      expect(args.before).toBeUndefined();
+      expect(args.after).toBeUndefined();
+    });
+
+    it('MemoryDetailsArgs should accept valid arguments', () => {
+      const args: MemoryDetailsArgs = {
+        ids: ['memory-1', 'memory-2', 'memory-3'],
+      };
+
+      expect(args.ids).toHaveLength(3);
+      expect(args.ids).toContain('memory-1');
+      expect(args.ids).toContain('memory-2');
+      expect(args.ids).toContain('memory-3');
     });
   });
 });

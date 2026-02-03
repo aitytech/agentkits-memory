@@ -84,6 +84,12 @@ View full memory details with edit and delete options.
 
 ![Memory Detail](https://raw.githubusercontent.com/aitytech/agentkits-memory/main/assets/agentkits-memory-memory-detail.png)
 
+### Manage Embeddings
+
+Generate and manage vector embeddings for semantic search.
+
+![Manage Embeddings](https://raw.githubusercontent.com/aitytech/agentkits-memory/main/assets/agentkits-memory-embedding.png)
+
 ---
 
 ## Quick Start
@@ -116,10 +122,64 @@ Once configured, your AI assistant can use these tools:
 | Tool | Description |
 |------|-------------|
 | `memory_save` | Save decisions, patterns, errors, or context |
-| `memory_search` | Search memories using semantic similarity |
-| `memory_recall` | Recall everything about a specific topic |
+| `memory_search` | **[Step 1]** Search memories - returns lightweight index |
+| `memory_timeline` | **[Step 2]** Get context around a memory |
+| `memory_details` | **[Step 3]** Get full content for specific IDs |
+| `memory_recall` | Quick recall - returns full content (legacy) |
 | `memory_list` | List recent memories |
 | `memory_status` | Check memory system status |
+
+---
+
+## Progressive Disclosure (Token-Efficient Search)
+
+AgentKits Memory uses a **3-layer search pattern** that saves ~70% tokens compared to fetching full content upfront.
+
+### How It Works
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│  Step 1: memory_search                                      │
+│  Returns: IDs, titles, tags, scores (~50 tokens/item)       │
+│  → Review index, pick relevant memories                     │
+└─────────────────────────────────────────────────────────────┘
+                             ↓
+┌─────────────────────────────────────────────────────────────┐
+│  Step 2: memory_timeline (optional)                         │
+│  Returns: Context ±30 minutes around memory                 │
+│  → Understand what happened before/after                    │
+└─────────────────────────────────────────────────────────────┘
+                             ↓
+┌─────────────────────────────────────────────────────────────┐
+│  Step 3: memory_details                                     │
+│  Returns: Full content for selected IDs only                │
+│  → Fetch only what you actually need                        │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### Example Workflow
+
+```typescript
+// Step 1: Search - get lightweight index
+memory_search({ query: "authentication" })
+// → Returns: [{ id: "abc", title: "JWT pattern...", score: 85% }]
+
+// Step 2: (Optional) See temporal context
+memory_timeline({ anchor: "abc" })
+// → Returns: What happened before/after this memory
+
+// Step 3: Get full content only for what you need
+memory_details({ ids: ["abc"] })
+// → Returns: Full content for selected memory
+```
+
+### Token Savings
+
+| Approach | Tokens Used |
+|----------|-------------|
+| **Old:** Fetch all content | ~500 tokens × 10 results = 5000 tokens |
+| **New:** Progressive disclosure | 50 × 10 + 500 × 2 = 1500 tokens |
+| **Savings** | **70% reduction** |
 
 ---
 

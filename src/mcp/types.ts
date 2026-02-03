@@ -7,15 +7,21 @@
  */
 
 /**
+ * MCP Tool input schema property
+ */
+export interface ToolInputSchemaProperty {
+  type: string;
+  description: string;
+  enum?: string[];
+  items?: { type: string };  // For array types
+}
+
+/**
  * MCP Tool input schema
  */
 export interface ToolInputSchema {
   type: 'object';
-  properties: Record<string, {
-    type: string;
-    description: string;
-    enum?: string[];
-  }>;
+  properties: Record<string, ToolInputSchemaProperty>;
   required?: string[];
 }
 
@@ -82,6 +88,22 @@ export interface MemoryListArgs {
   category?: string;
   limit?: number;
   since?: string;
+}
+
+/**
+ * Memory timeline arguments (Progressive Disclosure Layer 2)
+ */
+export interface MemoryTimelineArgs {
+  anchor: string;  // Memory ID from search
+  before?: number; // Minutes before (default: 30)
+  after?: number;  // Minutes after (default: 30)
+}
+
+/**
+ * Memory details arguments (Progressive Disclosure Layer 3)
+ */
+export interface MemoryDetailsArgs {
+  ids: string[];  // Memory IDs from search/timeline
 }
 
 /**

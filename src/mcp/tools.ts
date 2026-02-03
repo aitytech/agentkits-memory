@@ -42,7 +42,9 @@ export const MEMORY_TOOLS: MCPTool[] = [
   },
   {
     name: 'memory_search',
-    description: 'Search project memory using semantic similarity. Find relevant past decisions, patterns, or context.',
+    description: `[Step 1/3] Search memory index. Returns lightweight results with IDs and titles.
+Use memory_timeline(anchor) for context, then memory_details(ids) for full content.
+This 3-step workflow saves ~87% tokens vs fetching everything.`,
     inputSchema: {
       type: 'object',
       properties: {
@@ -52,7 +54,7 @@ export const MEMORY_TOOLS: MCPTool[] = [
         },
         limit: {
           type: 'string',
-          description: 'Maximum number of results (default: 5)',
+          description: 'Maximum number of results (default: 10)',
         },
         category: {
           type: 'string',
@@ -61,6 +63,45 @@ export const MEMORY_TOOLS: MCPTool[] = [
         },
       },
       required: ['query'],
+    },
+  },
+  {
+    name: 'memory_timeline',
+    description: `[Step 2/3] Get timeline context around a memory. Use after memory_search to understand temporal context.
+Shows what happened before/after a specific memory.`,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        anchor: {
+          type: 'string',
+          description: 'Memory ID from memory_search results',
+        },
+        before: {
+          type: 'number',
+          description: 'Minutes before anchor to include (default: 30)',
+        },
+        after: {
+          type: 'number',
+          description: 'Minutes after anchor to include (default: 30)',
+        },
+      },
+      required: ['anchor'],
+    },
+  },
+  {
+    name: 'memory_details',
+    description: `[Step 3/3] Get full content for specific memories. Use after reviewing search/timeline results.
+Only fetches memories you need, saving context tokens.`,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        ids: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Memory IDs from memory_search or memory_timeline',
+        },
+      },
+      required: ['ids'],
     },
   },
   {

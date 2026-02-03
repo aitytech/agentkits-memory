@@ -32,6 +32,8 @@ import type {
   MemorySearchArgs,
   MemoryRecallArgs,
   MemoryListArgs,
+  MemoryTimelineArgs,
+  MemoryDetailsArgs,
 } from './types.js';
 
 // Map category names to namespaces
@@ -191,6 +193,12 @@ class MemoryMCPServer {
         case 'memory_search':
           return this.toolSearch(service, args as unknown as MemorySearchArgs);
 
+        case 'memory_timeline':
+          return this.toolTimeline(service, args as unknown as MemoryTimelineArgs);
+
+        case 'memory_details':
+          return this.toolDetails(service, args as unknown as MemoryDetailsArgs);
+
         case 'memory_recall':
           return this.toolRecall(service, args as unknown as MemoryRecallArgs);
 
@@ -254,13 +262,14 @@ class MemoryMCPServer {
   }
 
   /**
-   * Search memory tool
+   * Search memory tool (Progressive Disclosure Layer 1)
+   * Returns lightweight index: id, title, category, score
    */
   private async toolSearch(
     service: ProjectMemoryService,
     args: MemorySearchArgs
   ): Promise<ToolCallResult> {
-    const limit = typeof args.limit === 'string' ? parseInt(args.limit, 10) : (args.limit || 5);
+    const limit = typeof args.limit === 'string' ? parseInt(args.limit, 10) : (args.limit || 10);
 
     // Map category to namespace
     const namespace = args.category ? CATEGORY_TO_NAMESPACE[args.category] : undefined;
@@ -284,16 +293,185 @@ class MemoryMCPServer {
       };
     }
 
-    const formatted = results.map((entry: MemoryEntry, i: number) => {
+    // Progressive Disclosure Layer 1: Return lightweight index only
+    // Full content requires memory_details(ids)
+    const index = results.map((entry: MemoryEntry, i: number) => {
       const category = entry.tags.find(t => Object.keys(CATEGORY_TO_NAMESPACE).includes(t)) || entry.namespace;
-      return `${i + 1}. [${category}]\n   ${entry.content}\n   Tags: ${entry.tags.join(', ') || 'none'}`;
-    }).join('\n\n');
+      const date = new Date(entry.createdAt).toLocaleDateString();
+      // Extract title from content (first line or first 60 chars)
+      const title = entry.content.split('\n')[0].slice(0, 60) + (entry.content.length > 60 ? '...' : '');
+      const score = (entry as MemoryEntry & { score?: number }).score;
+
+      return {
+        id: entry.id,
+        title,
+        category,
+        tags: entry.tags.slice(0, 3), // Limit tags
+        date,
+        score: score ? Math.round(score * 100) : undefined,
+      };
+    });
+
+    // Format as compact table
+    const formatted = index.map((item, i) =>
+      `${i + 1}. [${item.category}] ${item.title}\n   ID: ${item.id} | Tags: ${item.tags.join(', ') || '-'} | ${item.date}${item.score ? ` | Score: ${item.score}%` : ''}`
+    ).join('\n\n');
 
     return {
       content: [{
         type: 'text',
-        text: `Found ${results.length} memories:\n\n${formatted}`,
+        text: `## Search Results (${results.length} memories)
+
+${formatted}
+
+---
+**Next steps:**
+- \`memory_timeline(anchor: "ID")\` - Get context around a memory
+- \`memory_details(ids: ["ID1", "ID2"])\` - Get full content`,
       }],
+    };
+  }
+
+  /**
+   * Timeline context tool (Progressive Disclosure Layer 2)
+   * Returns memories before/after anchor
+   */
+  private async toolTimeline(
+    service: ProjectMemoryService,
+    args: MemoryTimelineArgs
+  ): Promise<ToolCallResult> {
+    const before = args.before || 30; // minutes
+    const after = args.after || 30;
+
+    // Get the anchor memory
+    const anchor = await service.get(args.anchor);
+    if (!anchor) {
+      return {
+        content: [{
+          type: 'text',
+          text: `Memory not found: ${args.anchor}`,
+        }],
+        isError: true,
+      };
+    }
+
+    const anchorTime = new Date(anchor.createdAt).getTime();
+    const startTime = anchorTime - (before * 60 * 1000);
+    const endTime = anchorTime + (after * 60 * 1000);
+
+    // Query memories in time range
+    const query: MemoryQuery = {
+      type: 'hybrid',
+      limit: 20,
+      namespace: anchor.namespace,
+    };
+
+    const allResults = await service.query(query);
+
+    // Filter by time range
+    const nearby = allResults.filter((entry: MemoryEntry) => {
+      const time = new Date(entry.createdAt).getTime();
+      return time >= startTime && time <= endTime;
+    });
+
+    // Sort by time
+    nearby.sort((a: MemoryEntry, b: MemoryEntry) =>
+      new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
+    );
+
+    // Format timeline
+    const category = anchor.tags.find(t => Object.keys(CATEGORY_TO_NAMESPACE).includes(t)) || anchor.namespace;
+    const anchorTitle = anchor.content.split('\n')[0].slice(0, 60);
+
+    const timeline = nearby.map((entry: MemoryEntry) => {
+      const time = new Date(entry.createdAt).toLocaleTimeString();
+      const isAnchor = entry.id === anchor.id;
+      const title = entry.content.split('\n')[0].slice(0, 50);
+      return `${isAnchor ? '→' : ' '} ${time} | ${entry.id} | ${title}${isAnchor ? ' ←' : ''}`;
+    }).join('\n');
+
+    return {
+      content: [{
+        type: 'text',
+        text: `## Timeline Context
+
+**Anchor:** ${anchorTitle}
+**Category:** ${category}
+**Time range:** ${before}min before → ${after}min after
+
+\`\`\`
+${timeline}
+\`\`\`
+
+---
+**Next:** \`memory_details(ids: ["${anchor.id}"])\` - Get full content`,
+      }],
+    };
+  }
+
+  /**
+   * Get full details tool (Progressive Disclosure Layer 3)
+   * Returns complete content for specified IDs
+   */
+  private async toolDetails(
+    service: ProjectMemoryService,
+    args: MemoryDetailsArgs
+  ): Promise<ToolCallResult> {
+    if (!args.ids || args.ids.length === 0) {
+      return {
+        content: [{
+          type: 'text',
+          text: 'No memory IDs provided. Use memory_search first to find IDs.',
+        }],
+        isError: true,
+      };
+    }
+
+    // Limit to prevent token explosion
+    const ids = args.ids.slice(0, 5);
+    if (args.ids.length > 5) {
+      // Will add note about limit
+    }
+
+    const memories: MemoryEntry[] = [];
+    for (const id of ids) {
+      const entry = await service.get(id);
+      if (entry) {
+        memories.push(entry);
+      }
+    }
+
+    if (memories.length === 0) {
+      return {
+        content: [{
+          type: 'text',
+          text: `No memories found for IDs: ${ids.join(', ')}`,
+        }],
+        isError: true,
+      };
+    }
+
+    // Format full details
+    const formatted = memories.map((entry: MemoryEntry, i: number) => {
+      const category = entry.tags.find(t => Object.keys(CATEGORY_TO_NAMESPACE).includes(t)) || entry.namespace;
+      const date = new Date(entry.createdAt).toLocaleString();
+
+      return `### ${i + 1}. [${category}] ${entry.id}
+
+**Created:** ${date}
+**Tags:** ${entry.tags.join(', ') || 'none'}
+
+${entry.content}`;
+    }).join('\n\n---\n\n');
+
+    let output = `## Memory Details (${memories.length} of ${args.ids.length} requested)\n\n${formatted}`;
+
+    if (args.ids.length > 5) {
+      output += `\n\n---\n⚠️ Limited to 5 memories. Request remaining IDs separately.`;
+    }
+
+    return {
+      content: [{ type: 'text', text: output }],
     };
   }
 
