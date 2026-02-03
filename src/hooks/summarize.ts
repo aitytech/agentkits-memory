@@ -73,6 +73,10 @@ export class SummarizeHook implements EventHandler {
       this.service.ensureWorkerRunning(input.cwd, 'embed-session', 'embed-worker.lock');
       if (isAIEnrichmentEnabled()) {
         this.service.ensureWorkerRunning(input.cwd, 'enrich-session', 'enrich-worker.lock');
+
+        // Queue compression for this session's observations (runs after enrichment)
+        this.service.queueTask('compress', 'sessions', input.sessionId);
+        this.service.ensureWorkerRunning(input.cwd, 'compress-session', 'compress-worker.lock');
       }
 
       // Summary enrichment needs transcript path — handled separately (not via queue)

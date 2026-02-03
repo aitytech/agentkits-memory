@@ -9,6 +9,7 @@ import { existsSync, rmSync, mkdirSync } from 'node:fs';
 import * as path from 'node:path';
 import { MemoryHookService, createHookService } from '../service.js';
 import { _setRunClaudePrintMockForTesting, resetAIEnrichmentCache } from '../ai-enrichment.js';
+import { computeContentHash } from '../types.js';
 
 const TEST_DIR = path.join(process.cwd(), '.test-memory-hooks');
 
@@ -613,6 +614,323 @@ describe('MemoryHookService', () => {
       expect(observations.length).toBe(1);
 
       await service2.shutdown();
+    });
+  });
+
+  describe('content hash deduplication', () => {
+    it('should deduplicate identical prompts within 5-minute window', async () => {
+      await service.initSession('session-1', 'test-project');
+
+      const prompt1 = await service.saveUserPrompt('session-1', 'test-project', 'Hello Claude');
+      const prompt2 = await service.saveUserPrompt('session-1', 'test-project', 'Hello Claude');
+
+      // Should return the same prompt (dedup)
+      expect(prompt1.id).toBe(prompt2.id);
+      expect(prompt1.contentHash).toBeDefined();
+      expect(prompt2.contentHash).toBe(prompt1.contentHash);
+    });
+
+    it('should allow different prompts in same session', async () => {
+      await service.initSession('session-1', 'test-project');
+
+      const prompt1 = await service.saveUserPrompt('session-1', 'test-project', 'First prompt');
+      const prompt2 = await service.saveUserPrompt('session-1', 'test-project', 'Second prompt');
+
+      expect(prompt1.id).not.toBe(prompt2.id);
+      expect(prompt1.promptNumber).toBe(1);
+      expect(prompt2.promptNumber).toBe(2);
+    });
+
+    it('should deduplicate identical observations within 60-second window', async () => {
+      await service.initSession('session-1', 'test-project');
+
+      const obs1 = await service.storeObservation(
+        'session-1', 'test-project', 'Read', { file_path: 'test.ts' }, {}, TEST_DIR
+      );
+      const obs2 = await service.storeObservation(
+        'session-1', 'test-project', 'Read', { file_path: 'test.ts' }, {}, TEST_DIR
+      );
+
+      // Should return the same observation (dedup)
+      expect(obs1.id).toBe(obs2.id);
+
+      // Session count should only increment once
+      const session = service.getSession('session-1');
+      expect(session?.observationCount).toBe(1);
+    });
+
+    it('should allow same tool on different files', async () => {
+      await service.initSession('session-1', 'test-project');
+
+      const obs1 = await service.storeObservation(
+        'session-1', 'test-project', 'Read', { file_path: 'a.ts' }, {}, TEST_DIR
+      );
+      const obs2 = await service.storeObservation(
+        'session-1', 'test-project', 'Read', { file_path: 'b.ts' }, {}, TEST_DIR
+      );
+
+      expect(obs1.id).not.toBe(obs2.id);
+    });
+  });
+
+  describe('session resume detection', () => {
+    it('should link new session to recent parent in same project', async () => {
+      // Create first session
+      await service.initSession('session-old', 'test-project');
+
+      // Create second session shortly after
+      const session2 = await service.initSession('session-new', 'test-project');
+
+      expect(session2.parentSessionId).toBe('session-old');
+    });
+
+    it('should not link sessions from different projects', async () => {
+      await service.initSession('session-1', 'project-a');
+      const session2 = await service.initSession('session-2', 'project-b');
+
+      expect(session2.parentSessionId).toBeUndefined();
+    });
+
+    it('should return existing session on re-init (no duplicate parent)', async () => {
+      await service.initSession('session-1', 'test-project');
+      const first = await service.initSession('session-2', 'test-project');
+      const second = await service.initSession('session-2', 'test-project');
+
+      // Re-init returns the same session
+      expect(first.sessionId).toBe(second.sessionId);
+      expect(first.parentSessionId).toBe(second.parentSessionId);
+    });
+  });
+
+  describe('context XML wrapper', () => {
+    it('should wrap context in agentkits-memory-context tags', async () => {
+      await service.initSession('session-1', 'test-project', 'Test');
+      await service.storeObservation('session-1', 'test-project', 'Read', {}, {}, TEST_DIR);
+
+      const context = await service.getContext('test-project');
+
+      expect(context.markdown).toContain('<agentkits-memory-context>');
+      expect(context.markdown).toContain('</agentkits-memory-context>');
+      expect(context.markdown).toContain("Use these naturally when relevant. Don't force them into every response.");
+    });
+  });
+
+  describe('context grouping by prompt', () => {
+    it('should group observations by prompt number when prompts exist', async () => {
+      await service.initSession('session-1', 'test-project');
+
+      // Save prompt first
+      await service.saveUserPrompt('session-1', 'test-project', 'Fix the bug');
+
+      // Store observation linked to prompt 1
+      await service.storeObservation(
+        'session-1', 'test-project', 'Read', { file_path: 'bug.ts' }, {}, TEST_DIR
+      );
+
+      const context = await service.getContext('test-project');
+
+      // Should have prompt-based grouping
+      expect(context.markdown).toContain('Prompt #1');
+      expect(context.markdown).toContain('Fix the bug');
+    });
+  });
+
+  describe('compressObservation', () => {
+    const originalEnv = process.env.AGENTKITS_AI_ENRICHMENT;
+
+    beforeEach(() => {
+      delete process.env.AGENTKITS_AI_ENRICHMENT;
+      resetAIEnrichmentCache();
+    });
+
+    afterEach(() => {
+      _setRunClaudePrintMockForTesting(null);
+      resetAIEnrichmentCache();
+      if (originalEnv === undefined) {
+        delete process.env.AGENTKITS_AI_ENRICHMENT;
+      } else {
+        process.env.AGENTKITS_AI_ENRICHMENT = originalEnv;
+      }
+    });
+
+    it('should compress an observation and clear raw data', async () => {
+      await service.initSession('session-1', 'test-project');
+      const obs = await service.storeObservation(
+        'session-1', 'test-project', 'Read',
+        { file_path: 'auth.ts' }, { content: 'big file content' }, TEST_DIR
+      );
+
+      _setRunClaudePrintMockForTesting(() =>
+        JSON.stringify({ compressed_summary: 'Read auth.ts for login flow analysis' })
+      );
+
+      const result = await service.compressObservation(obs.id);
+      expect(result).toBe(true);
+
+      // Verify compressed data in DB
+      const observations = await service.getSessionObservations('session-1');
+      expect(observations[0].compressedSummary).toBe('Read auth.ts for login flow analysis');
+      expect(observations[0].isCompressed).toBe(true);
+      expect(observations[0].toolInput).toBe('{}'); // raw data cleared
+      expect(observations[0].toolResponse).toBe('{}'); // raw data cleared
+    });
+
+    it('should skip already-compressed observations', async () => {
+      await service.initSession('session-1', 'test-project');
+      const obs = await service.storeObservation(
+        'session-1', 'test-project', 'Read', {}, {}, TEST_DIR
+      );
+
+      _setRunClaudePrintMockForTesting(() =>
+        JSON.stringify({ compressed_summary: 'First compression' })
+      );
+
+      // First compress
+      await service.compressObservation(obs.id);
+
+      // Second compress should skip (already compressed)
+      const result = await service.compressObservation(obs.id);
+      expect(result).toBe(false);
+    });
+
+    it('should return false for non-existent observation', async () => {
+      await service.initialize();
+      const result = await service.compressObservation('obs_nonexistent_0000');
+      expect(result).toBe(false);
+    });
+
+    it('should return false when AI returns null', async () => {
+      await service.initSession('session-1', 'test-project');
+      const obs = await service.storeObservation(
+        'session-1', 'test-project', 'Read', {}, {}, TEST_DIR
+      );
+
+      _setRunClaudePrintMockForTesting(() => 'not json');
+
+      const result = await service.compressObservation(obs.id);
+      expect(result).toBe(false);
+    });
+  });
+
+  describe('compressSessionObservations', () => {
+    const originalEnv = process.env.AGENTKITS_AI_ENRICHMENT;
+
+    beforeEach(() => {
+      delete process.env.AGENTKITS_AI_ENRICHMENT;
+      resetAIEnrichmentCache();
+    });
+
+    afterEach(() => {
+      _setRunClaudePrintMockForTesting(null);
+      resetAIEnrichmentCache();
+      if (originalEnv === undefined) {
+        delete process.env.AGENTKITS_AI_ENRICHMENT;
+      } else {
+        process.env.AGENTKITS_AI_ENRICHMENT = originalEnv;
+      }
+    });
+
+    it('should compress all session observations and create digest', async () => {
+      await service.initSession('session-1', 'test-project');
+      await service.storeObservation('session-1', 'test-project', 'Read', { file_path: 'a.ts' }, {}, TEST_DIR);
+      await service.storeObservation('session-1', 'test-project', 'Write', { file_path: 'b.ts' }, {}, TEST_DIR);
+
+      // Save structured summary (needed for digest generation)
+      const structured = await service.generateStructuredSummary('session-1');
+      await service.saveSessionSummary(structured);
+
+      let callCount = 0;
+      _setRunClaudePrintMockForTesting(() => {
+        callCount++;
+        // First two calls: observation compression, third: session digest
+        if (callCount <= 2) {
+          return JSON.stringify({ compressed_summary: `Compressed obs ${callCount}` });
+        }
+        return JSON.stringify({ digest: 'Session compressed all observations successfully.' });
+      });
+
+      const result = await service.compressSessionObservations('session-1');
+      expect(result.compressed).toBe(2);
+      expect(result.digestCreated).toBe(true);
+    });
+
+    it('should handle session with no summary gracefully', async () => {
+      await service.initSession('session-1', 'test-project');
+      await service.storeObservation('session-1', 'test-project', 'Read', {}, {}, TEST_DIR);
+
+      _setRunClaudePrintMockForTesting(() =>
+        JSON.stringify({ compressed_summary: 'Compressed' })
+      );
+
+      const result = await service.compressSessionObservations('session-1');
+      expect(result.compressed).toBe(1);
+      expect(result.digestCreated).toBe(false); // No summary = no digest
+    });
+  });
+
+  describe('processCompressionQueue', () => {
+    const originalEnv = process.env.AGENTKITS_AI_ENRICHMENT;
+
+    beforeEach(() => {
+      delete process.env.AGENTKITS_AI_ENRICHMENT;
+      resetAIEnrichmentCache();
+    });
+
+    afterEach(() => {
+      _setRunClaudePrintMockForTesting(null);
+      resetAIEnrichmentCache();
+      if (originalEnv === undefined) {
+        delete process.env.AGENTKITS_AI_ENRICHMENT;
+      } else {
+        process.env.AGENTKITS_AI_ENRICHMENT = originalEnv;
+      }
+    });
+
+    it('should process compress tasks from queue', async () => {
+      await service.initSession('session-1', 'test-project');
+      const obs = await service.storeObservation(
+        'session-1', 'test-project', 'Read', { file_path: 'test.ts' }, {}, TEST_DIR
+      );
+
+      // Queue a compress task manually
+      service.queueTask('compress', 'observations', obs.id);
+
+      _setRunClaudePrintMockForTesting(() =>
+        JSON.stringify({ compressed_summary: 'Read test.ts' })
+      );
+
+      const count = await service.processCompressionQueue();
+      expect(count).toBe(1);
+
+      // Verify observation is compressed
+      const observations = await service.getSessionObservations('session-1');
+      expect(observations[0].compressedSummary).toBe('Read test.ts');
+      expect(observations[0].isCompressed).toBe(true);
+    });
+
+    it('should return 0 when queue is empty', async () => {
+      await service.initialize();
+      const count = await service.processCompressionQueue();
+      expect(count).toBe(0);
+    });
+  });
+
+  describe('computeContentHash', () => {
+    it('should produce consistent hashes', () => {
+      const hash1 = computeContentHash('a', 'b', 'c');
+      const hash2 = computeContentHash('a', 'b', 'c');
+      expect(hash1).toBe(hash2);
+    });
+
+    it('should produce different hashes for different inputs', () => {
+      const hash1 = computeContentHash('a', 'b');
+      const hash2 = computeContentHash('a', 'c');
+      expect(hash1).not.toBe(hash2);
+    });
+
+    it('should produce 16-char hex string', () => {
+      const hash = computeContentHash('test');
+      expect(hash).toMatch(/^[0-9a-f]{16}$/);
     });
   });
 

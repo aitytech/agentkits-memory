@@ -72,7 +72,7 @@ async function main(): Promise<void> {
 
     if (!event) {
       console.error('Usage: agentkits-memory-hook <event>');
-      console.error('Events: context, session-init, observation, summarize, user-message, enrich, enrich-summary, embed-session, enrich-session');
+      console.error('Events: context, session-init, observation, summarize, user-message, enrich, enrich-summary, embed-session, enrich-session, compress-session');
       process.exit(1);
     }
 
@@ -135,6 +135,24 @@ async function main(): Promise<void> {
       process.on('SIGINT', cleanup);
       try {
         await svc.processEnrichmentQueue();
+      } finally {
+        await svc.shutdown();
+      }
+      process.exit(0);
+    }
+
+    // Handle 'compress-session' command (no stdin, runs as background process)
+    // Processes the SQLite compression queue — compresses observations + generates session digests.
+    // Usage: compress-session <cwd>
+    if (event === 'compress-session') {
+      const cwdArg = process.argv[3] || process.cwd();
+      const svc = new MemoryHookService(cwdArg);
+      await svc.initialize();
+      const cleanup = async () => { try { await svc.shutdown(); } catch {} process.exit(0); };
+      process.on('SIGTERM', cleanup);
+      process.on('SIGINT', cleanup);
+      try {
+        await svc.processCompressionQueue();
       } finally {
         await svc.shutdown();
       }

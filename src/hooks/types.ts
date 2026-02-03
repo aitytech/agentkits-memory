@@ -2,10 +2,12 @@
  * Hook Types for AgentKits Memory
  *
  * Lightweight hook system for auto-capturing Claude Code sessions.
- * Based on claude-mem patterns but simplified for project-scoped storage.
+ * Project-scoped storage.
  *
  * @module @agentkits/memory/hooks/types
  */
+
+import { createHash } from 'node:crypto';
 
 // ===== Claude Code Hook Input Types =====
 
@@ -184,6 +186,15 @@ export interface Observation {
 
   /** Extracted concepts/topics */
   concepts?: string[];
+
+  /** Content hash for deduplication */
+  contentHash?: string;
+
+  /** Compressed single-sentence summary (AI-generated) */
+  compressedSummary?: string;
+
+  /** Whether raw data has been replaced by compressed summary */
+  isCompressed?: boolean;
 }
 
 /**
@@ -226,6 +237,9 @@ export interface SessionRecord {
 
   /** Status */
   status: 'active' | 'completed' | 'abandoned';
+
+  /** Parent session ID for session resume/continuation tracking */
+  parentSessionId?: string;
 }
 
 /**
@@ -246,6 +260,9 @@ export interface UserPrompt {
 
   /** Timestamp */
   createdAt: number;
+
+  /** Content hash for deduplication */
+  contentHash?: string;
 }
 
 /**
@@ -317,12 +334,49 @@ export interface MemoryContext {
 // ===== Utility Functions =====
 
 /**
+ * Context configuration for controlling what gets injected
+ */
+export interface ContextConfig {
+  showSummaries: boolean;
+  showPrompts: boolean;
+  showObservations: boolean;
+  showToolGuidance: boolean;
+  maxSummaries: number;
+  maxPrompts: number;
+  maxObservations: number;
+}
+
+/** Default context configuration */
+export const DEFAULT_CONTEXT_CONFIG: ContextConfig = {
+  showSummaries: true,
+  showPrompts: true,
+  showObservations: true,
+  showToolGuidance: true,
+  maxSummaries: 3,
+  maxPrompts: 10,
+  maxObservations: 10,
+};
+
+/**
  * Generate observation ID
  */
 export function generateObservationId(): string {
   const timestamp = Date.now().toString(36);
   const random = Math.random().toString(36).substring(2, 6);
   return `obs_${timestamp}_${random}`;
+}
+
+/**
+ * Compute content hash for deduplication.
+ * Uses SHA-256 truncated to 16 hex chars (64 bits) — sufficient for dedup.
+ * Computation: ~0.01ms.
+ */
+export function computeContentHash(...parts: string[]): string {
+  const hash = createHash('sha256');
+  for (const part of parts) {
+    hash.update(part);
+  }
+  return hash.digest('hex').substring(0, 16);
 }
 
 /**

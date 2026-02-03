@@ -18,6 +18,12 @@ import {
   parseSummaryResponse,
   buildSummaryPrompt,
   enrichSummaryWithAI,
+  buildCompressionPrompt,
+  parseCompressionResponse,
+  compressObservationWithAI,
+  buildSessionDigestPrompt,
+  parseSessionDigestResponse,
+  generateSessionDigestWithAI,
   _setRunClaudePrintMockForTesting,
   _setCliAvailableForTesting,
 } from '../ai-enrichment.js';
@@ -631,6 +637,244 @@ describe('AI Enrichment Module', () => {
       _setRunClaudePrintMockForTesting(() => null as unknown as string);
 
       const result = await enrichSummaryWithAI('Request: Fix bug', 'I fixed it.');
+      expect(result).toBeNull();
+    });
+  });
+
+  describe('buildCompressionPrompt', () => {
+    it('should include tool name and input/response', () => {
+      const prompt = buildCompressionPrompt('Read', '{"file_path":"test.ts"}', 'file content');
+      expect(prompt).toContain('Tool: Read');
+      expect(prompt).toContain('Input: {"file_path":"test.ts"}');
+      expect(prompt).toContain('Response: file content');
+      expect(prompt).toContain('compressed_summary');
+    });
+
+    it('should include context hints when provided', () => {
+      const prompt = buildCompressionPrompt('Read', '{}', '{}', 'Examining config', 'Read config file.');
+      expect(prompt).toContain('Context: Examining config | Read config file.');
+    });
+
+    it('should omit context line when no hints', () => {
+      const prompt = buildCompressionPrompt('Read', '{}', '{}');
+      expect(prompt).not.toContain('Context:');
+    });
+
+    it('should truncate long input to 1000 chars', () => {
+      const longInput = 'x'.repeat(3000);
+      const prompt = buildCompressionPrompt('Read', longInput, 'short');
+      expect(prompt).toContain('x'.repeat(1000));
+      expect(prompt).not.toContain('x'.repeat(1001));
+    });
+
+    it('should truncate long response to 1000 chars', () => {
+      const longResponse = 'y'.repeat(3000);
+      const prompt = buildCompressionPrompt('Read', 'short', longResponse);
+      expect(prompt).toContain('y'.repeat(1000));
+      expect(prompt).not.toContain('y'.repeat(1001));
+    });
+  });
+
+  describe('parseCompressionResponse', () => {
+    it('should parse valid compression JSON', () => {
+      const json = JSON.stringify({ compressed_summary: 'Read auth.ts to check login flow' });
+      const result = parseCompressionResponse(json);
+      expect(result).not.toBeNull();
+      expect(result!.compressed_summary).toBe('Read auth.ts to check login flow');
+    });
+
+    it('should strip markdown fences', () => {
+      const json = '```json\n{"compressed_summary":"Test summary"}\n```';
+      const result = parseCompressionResponse(json);
+      expect(result).not.toBeNull();
+      expect(result!.compressed_summary).toBe('Test summary');
+    });
+
+    it('should strip plain ``` fences', () => {
+      const json = '```\n{"compressed_summary":"Test summary"}\n```';
+      const result = parseCompressionResponse(json);
+      expect(result).not.toBeNull();
+      expect(result!.compressed_summary).toBe('Test summary');
+    });
+
+    it('should return null for invalid JSON', () => {
+      expect(parseCompressionResponse('not json')).toBeNull();
+    });
+
+    it('should return null when compressed_summary is missing', () => {
+      const json = JSON.stringify({ other: 'field' });
+      expect(parseCompressionResponse(json)).toBeNull();
+    });
+
+    it('should return null when compressed_summary is empty', () => {
+      const json = JSON.stringify({ compressed_summary: '' });
+      expect(parseCompressionResponse(json)).toBeNull();
+    });
+
+    it('should return null when compressed_summary is not a string', () => {
+      const json = JSON.stringify({ compressed_summary: 123 });
+      expect(parseCompressionResponse(json)).toBeNull();
+    });
+
+    it('should truncate to 200 chars', () => {
+      const json = JSON.stringify({ compressed_summary: 'A'.repeat(300) });
+      const result = parseCompressionResponse(json);
+      expect(result).not.toBeNull();
+      expect(result!.compressed_summary.length).toBe(200);
+    });
+  });
+
+  describe('compressObservationWithAI with mock CLI', () => {
+    afterEach(() => {
+      _setRunClaudePrintMockForTesting(null);
+    });
+
+    it('should return compressed observation on success', async () => {
+      delete process.env.AGENTKITS_AI_ENRICHMENT;
+      _setRunClaudePrintMockForTesting(() =>
+        JSON.stringify({ compressed_summary: 'Read auth module for login flow' })
+      );
+
+      const result = await compressObservationWithAI('Read', '{"file_path":"auth.ts"}', 'export class Auth {}', 'Examining auth', 'Read auth module.');
+      expect(result).not.toBeNull();
+      expect(result!.compressed_summary).toBe('Read auth module for login flow');
+    });
+
+    it('should return null when CLI unavailable', async () => {
+      delete process.env.AGENTKITS_AI_ENRICHMENT;
+      _setCliAvailableForTesting(false);
+
+      const result = await compressObservationWithAI('Read', '{}', '{}');
+      expect(result).toBeNull();
+    });
+
+    it('should return null when CLI returns invalid response', async () => {
+      delete process.env.AGENTKITS_AI_ENRICHMENT;
+      _setRunClaudePrintMockForTesting(() => 'not json');
+
+      const result = await compressObservationWithAI('Read', '{}', '{}');
+      expect(result).toBeNull();
+    });
+
+    it('should return null when CLI throws', async () => {
+      delete process.env.AGENTKITS_AI_ENRICHMENT;
+      _setRunClaudePrintMockForTesting(() => { throw new Error('Error'); });
+
+      const result = await compressObservationWithAI('Read', '{}', '{}');
+      expect(result).toBeNull();
+    });
+
+    it('should return null when env=false', async () => {
+      process.env.AGENTKITS_AI_ENRICHMENT = 'false';
+      _setRunClaudePrintMockForTesting(() =>
+        JSON.stringify({ compressed_summary: 'Should not reach here' })
+      );
+
+      const result = await compressObservationWithAI('Read', '{}', '{}');
+      expect(result).toBeNull();
+    });
+  });
+
+  describe('buildSessionDigestPrompt', () => {
+    it('should include request, observations, and completion', () => {
+      const prompt = buildSessionDigestPrompt(
+        'Fix auth bug',
+        ['Read auth.ts', 'Edited login handler', 'Ran tests'],
+        'Fixed authentication',
+        ['src/auth.ts']
+      );
+      expect(prompt).toContain('Request: Fix auth bug');
+      expect(prompt).toContain('Read auth.ts');
+      expect(prompt).toContain('Edited login handler');
+      expect(prompt).toContain('Completed: Fixed authentication');
+      expect(prompt).toContain('Files modified: src/auth.ts');
+      expect(prompt).toContain('"digest"');
+    });
+
+    it('should omit files line when no files modified', () => {
+      const prompt = buildSessionDigestPrompt('Test', ['obs1'], 'Done', []);
+      expect(prompt).not.toContain('Files modified:');
+    });
+
+    it('should limit observation summaries to 30', () => {
+      const obs = Array.from({ length: 50 }, (_, i) => `Obs ${i}`);
+      const prompt = buildSessionDigestPrompt('Test', obs, 'Done', []);
+      // Should contain obs 0-29 but not 30+
+      expect(prompt).toContain('Obs 29');
+      expect(prompt).not.toContain('Obs 30');
+    });
+  });
+
+  describe('parseSessionDigestResponse', () => {
+    it('should parse valid digest JSON', () => {
+      const json = JSON.stringify({ digest: 'Session fixed auth bug in 3 files.' });
+      const result = parseSessionDigestResponse(json);
+      expect(result).not.toBeNull();
+      expect(result!.digest).toBe('Session fixed auth bug in 3 files.');
+    });
+
+    it('should strip markdown fences', () => {
+      const json = '```json\n{"digest":"Test digest"}\n```';
+      const result = parseSessionDigestResponse(json);
+      expect(result).not.toBeNull();
+      expect(result!.digest).toBe('Test digest');
+    });
+
+    it('should return null for invalid JSON', () => {
+      expect(parseSessionDigestResponse('not json')).toBeNull();
+    });
+
+    it('should return null when digest is missing', () => {
+      expect(parseSessionDigestResponse(JSON.stringify({ other: 'x' }))).toBeNull();
+    });
+
+    it('should return null when digest is empty', () => {
+      expect(parseSessionDigestResponse(JSON.stringify({ digest: '' }))).toBeNull();
+    });
+
+    it('should return null when digest is not a string', () => {
+      expect(parseSessionDigestResponse(JSON.stringify({ digest: 42 }))).toBeNull();
+    });
+
+    it('should truncate to 600 chars', () => {
+      const json = JSON.stringify({ digest: 'D'.repeat(800) });
+      const result = parseSessionDigestResponse(json);
+      expect(result).not.toBeNull();
+      expect(result!.digest.length).toBe(600);
+    });
+  });
+
+  describe('generateSessionDigestWithAI with mock CLI', () => {
+    afterEach(() => {
+      _setRunClaudePrintMockForTesting(null);
+    });
+
+    it('should return digest on success', async () => {
+      delete process.env.AGENTKITS_AI_ENRICHMENT;
+      _setRunClaudePrintMockForTesting(() =>
+        JSON.stringify({ digest: 'Fixed auth bug by patching JWT validation.' })
+      );
+
+      const result = await generateSessionDigestWithAI(
+        'Fix auth', ['Read auth.ts', 'Edit auth.ts'], 'Fixed JWT', ['auth.ts']
+      );
+      expect(result).not.toBeNull();
+      expect(result!.digest).toBe('Fixed auth bug by patching JWT validation.');
+    });
+
+    it('should return null when CLI unavailable', async () => {
+      delete process.env.AGENTKITS_AI_ENRICHMENT;
+      _setCliAvailableForTesting(false);
+
+      const result = await generateSessionDigestWithAI('Test', [], 'Done', []);
+      expect(result).toBeNull();
+    });
+
+    it('should return null when CLI returns null', async () => {
+      delete process.env.AGENTKITS_AI_ENRICHMENT;
+      _setRunClaudePrintMockForTesting(() => null as unknown as string);
+
+      const result = await generateSessionDigestWithAI('Test', [], 'Done', []);
       expect(result).toBeNull();
     });
   });

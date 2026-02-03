@@ -334,3 +334,161 @@ export async function enrichSummaryWithAI(
     return null;
   }
 }
+
+// ===== Per-Observation Compression =====
+
+/**
+ * Compressed observation data
+ */
+export interface CompressedObservation {
+  compressed_summary: string;
+}
+
+/**
+ * Build prompt for compressing a single observation into a dense summary.
+ * Uses existing subtitle/narrative as hints for faster, more accurate compression.
+ */
+export function buildCompressionPrompt(
+  toolName: string,
+  toolInput: string,
+  toolResponse: string,
+  subtitle?: string,
+  narrative?: string
+): string {
+  const hints = [subtitle, narrative].filter(Boolean).join(' | ');
+  return `Compress this tool observation into a single dense summary (50-150 chars).
+
+Tool: ${toolName}
+${hints ? `Context: ${hints}\n` : ''}Input: ${toolInput.substring(0, 1000)}
+Response: ${toolResponse.substring(0, 1000)}
+
+Return ONLY a JSON object (no markdown, no code fences):
+{"compressed_summary": "dense summary here"}`;
+}
+
+/**
+ * Parse compression response from AI
+ */
+export function parseCompressionResponse(text: string): CompressedObservation | null {
+  try {
+    let cleaned = text.trim();
+    if (cleaned.startsWith('```json')) cleaned = cleaned.slice(7);
+    else if (cleaned.startsWith('```')) cleaned = cleaned.slice(3);
+    if (cleaned.endsWith('```')) cleaned = cleaned.slice(0, -3);
+    cleaned = cleaned.trim();
+
+    const parsed = JSON.parse(cleaned);
+    if (typeof parsed.compressed_summary !== 'string' || !parsed.compressed_summary) return null;
+
+    return {
+      compressed_summary: parsed.compressed_summary.substring(0, 200),
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Compress a single observation using `claude --print` CLI.
+ * Returns a dense 50-150 char summary suitable for context injection.
+ */
+export async function compressObservationWithAI(
+  toolName: string,
+  toolInput: string,
+  toolResponse: string,
+  subtitle?: string,
+  narrative?: string,
+  timeoutMs: number = 10000
+): Promise<CompressedObservation | null> {
+  if (!isClaudeCliAvailable()) return null;
+
+  try {
+    const prompt = buildCompressionPrompt(toolName, toolInput, toolResponse, subtitle, narrative);
+    const systemPrompt = 'You are a data compressor. Produce the shortest possible accurate summary. Return only valid JSON.';
+
+    const resultText = runClaudePrint(prompt, systemPrompt, timeoutMs);
+    if (!resultText) return null;
+    return parseCompressionResponse(resultText);
+  } catch {
+    return null;
+  }
+}
+
+// ===== Session-Level Digest =====
+
+/**
+ * Session digest data from AI compression
+ */
+export interface SessionDigest {
+  digest: string;
+}
+
+/**
+ * Build prompt for generating a compressed session digest.
+ * Takes the session's request, observation summaries, and completion info.
+ */
+export function buildSessionDigestPrompt(
+  request: string,
+  observationSummaries: string[],
+  completed: string,
+  filesModified: string[]
+): string {
+  const obsText = observationSummaries.slice(0, 30).join('\n- ');
+  const filesText = filesModified.slice(0, 10).join(', ');
+  return `Compress this session into a single dense digest (200-500 chars).
+
+Request: ${request.substring(0, 500)}
+Observations:
+- ${obsText}
+Completed: ${completed.substring(0, 300)}
+${filesText ? `Files modified: ${filesText}\n` : ''}
+Return ONLY a JSON object (no markdown, no code fences):
+{"digest": "dense session digest here"}`;
+}
+
+/**
+ * Parse session digest response from AI
+ */
+export function parseSessionDigestResponse(text: string): SessionDigest | null {
+  try {
+    let cleaned = text.trim();
+    if (cleaned.startsWith('```json')) cleaned = cleaned.slice(7);
+    else if (cleaned.startsWith('```')) cleaned = cleaned.slice(3);
+    if (cleaned.endsWith('```')) cleaned = cleaned.slice(0, -3);
+    cleaned = cleaned.trim();
+
+    const parsed = JSON.parse(cleaned);
+    if (typeof parsed.digest !== 'string' || !parsed.digest) return null;
+
+    return {
+      digest: parsed.digest.substring(0, 600),
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Generate a session-level digest using `claude --print` CLI.
+ * Compresses an entire session into a 200-500 char digest.
+ */
+export async function generateSessionDigestWithAI(
+  request: string,
+  observationSummaries: string[],
+  completed: string,
+  filesModified: string[],
+  timeoutMs: number = 15000
+): Promise<SessionDigest | null> {
+  if (!isClaudeCliAvailable()) return null;
+
+  try {
+    const prompt = buildSessionDigestPrompt(request, observationSummaries, completed, filesModified);
+    const systemPrompt = 'You are a session compressor. Produce the shortest possible accurate digest of a coding session. Return only valid JSON.';
+
+    const resultText = runClaudePrint(prompt, systemPrompt, timeoutMs);
+    if (!resultText) return null;
+    return parseSessionDigestResponse(resultText);
+  } catch {
+    return null;
+  }
+}

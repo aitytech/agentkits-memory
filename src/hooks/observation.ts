@@ -24,6 +24,8 @@ const SKIP_TOOLS = new Set([
   'AskFollowupQuestion',
   'AskUserQuestion',
   'AttemptCompletion',
+  // Low-signal tools (directory listings add noise)
+  'LS',
   // Skip our own memory tools (avoid capturing memory ops as observations)
   'mcp__memory__memory_save',
   'mcp__memory__memory_search',

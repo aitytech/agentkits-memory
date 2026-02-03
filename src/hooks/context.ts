@@ -51,6 +51,20 @@ export class ContextHook implements EventHandler {
       const context = await this.service.getContext(input.project);
       const hasHistory = context.markdown && !context.markdown.includes('No previous session context');
 
+      // Display status to user via stderr (merged from user-message hook)
+      const obsCount = context.recentObservations.length;
+      const sessionCount = context.sessionSummaries.length || context.previousSessions.length;
+      const promptCount = context.userPrompts.length;
+      if (obsCount > 0 || sessionCount > 0 || promptCount > 0) {
+        const stats: string[] = [];
+        if (sessionCount > 0) stats.push(`${sessionCount} session${sessionCount > 1 ? 's' : ''}`);
+        if (obsCount > 0) stats.push(`${obsCount} observation${obsCount > 1 ? 's' : ''}`);
+        if (promptCount > 0) stats.push(`${promptCount} prompt${promptCount > 1 ? 's' : ''}`);
+        console.error(`\n  AgentKits Memory: ${stats.join(', ')}\n`);
+      } else {
+        console.error('\n  AgentKits Memory: Fresh — use memory_save to start\n');
+      }
+
       if (hasHistory) {
         // Inject full context with history
         return {

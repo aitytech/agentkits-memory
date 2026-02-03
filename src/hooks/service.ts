@@ -27,8 +27,11 @@ import {
   extractFacts,
   extractConcepts,
   truncate,
+  computeContentHash,
+  ContextConfig,
+  DEFAULT_CONTEXT_CONFIG,
 } from './types.js';
-import { enrichWithAI, enrichSummaryWithAI } from './ai-enrichment.js';
+import { enrichWithAI, enrichSummaryWithAI, compressObservationWithAI, generateSessionDigestWithAI } from './ai-enrichment.js';
 
 /**
  * Memory Hook Service Configuration
@@ -126,12 +129,25 @@ export class MemoryHookService {
       return existing;
     }
 
+    // Resume detection: find recent session in same project within 30 min
+    let parentSessionId: string | null = null;
+    const thirtyMinAgo = Date.now() - 30 * 60 * 1000;
+    const recentSession = this.db!.prepare(`
+      SELECT session_id FROM sessions
+      WHERE project = ? AND started_at > ? AND session_id != ?
+      ORDER BY started_at DESC LIMIT 1
+    `).get(project, thirtyMinAgo, sessionId) as { session_id: string } | undefined;
+
+    if (recentSession) {
+      parentSessionId = recentSession.session_id;
+    }
+
     // Create new session
     const now = Date.now();
     const result = this.db!.prepare(`
-      INSERT INTO sessions (session_id, project, prompt, started_at, observation_count, status)
-      VALUES (?, ?, ?, ?, 0, 'active')
-    `).run(sessionId, project, prompt || '', now);
+      INSERT INTO sessions (session_id, project, prompt, started_at, observation_count, status, parent_session_id)
+      VALUES (?, ?, ?, ?, 0, 'active', ?)
+    `).run(sessionId, project, prompt || '', now, parentSessionId);
 
     return {
       id: Number(result.lastInsertRowid),
@@ -141,6 +157,7 @@ export class MemoryHookService {
       startedAt: now,
       observationCount: 0,
       status: 'active',
+      parentSessionId: parentSessionId || undefined,
     };
   }
 
@@ -155,14 +172,35 @@ export class MemoryHookService {
     // Ensure session exists
     await this.initSession(sessionId, project, promptText);
 
+    // Dedup: check for identical prompt in same project within 5 minutes
+    const contentHash = computeContentHash(project, promptText);
+    const fiveMinAgo = Date.now() - 5 * 60 * 1000;
+    const existing = this.db!.prepare(`
+      SELECT up.* FROM user_prompts up
+      JOIN sessions s ON s.session_id = up.session_id
+      WHERE up.content_hash = ? AND s.project = ? AND up.created_at > ?
+      LIMIT 1
+    `).get(contentHash, project, fiveMinAgo) as Record<string, unknown> | undefined;
+
+    if (existing) {
+      return {
+        id: existing.id as number,
+        sessionId: existing.session_id as string,
+        promptNumber: existing.prompt_number as number,
+        promptText: existing.prompt_text as string,
+        createdAt: existing.created_at as number,
+        contentHash,
+      };
+    }
+
     // Get next prompt number
     const promptNumber = this.getPromptNumber(sessionId) + 1;
     const now = Date.now();
 
     const result = this.db!.prepare(`
-      INSERT OR IGNORE INTO user_prompts (session_id, prompt_number, prompt_text, created_at)
-      VALUES (?, ?, ?, ?)
-    `).run(sessionId, promptNumber, promptText, now);
+      INSERT OR IGNORE INTO user_prompts (session_id, prompt_number, prompt_text, content_hash, created_at)
+      VALUES (?, ?, ?, ?, ?)
+    `).run(sessionId, promptNumber, promptText, contentHash, now);
 
     const id = result.changes > 0 ? Number(result.lastInsertRowid) : 0;
 
@@ -177,6 +215,7 @@ export class MemoryHookService {
       promptNumber,
       promptText,
       createdAt: now,
+      contentHash,
     };
   }
 
@@ -314,6 +353,19 @@ export class MemoryHookService {
       this.config.maxResponseSize
     );
 
+    // Dedup: check for identical observation in same session within 60 seconds
+    const contentHash = computeContentHash(sessionId, toolName, inputStr);
+    const oneMinAgo = now - 60 * 1000;
+    const existingObs = this.db!.prepare(
+      'SELECT id FROM observations WHERE content_hash = ? AND session_id = ? AND timestamp > ? LIMIT 1'
+    ).get(contentHash, sessionId, oneMinAgo) as { id: string } | undefined;
+
+    if (existingObs) {
+      // Return existing observation without re-inserting
+      const row = this.db!.prepare('SELECT * FROM observations WHERE id = ?').get(existingObs.id) as Record<string, unknown>;
+      return this.rowToObservation(row);
+    }
+
     // Template-based extraction only (fast, <10ms)
     // AI enrichment runs asynchronously via fire-and-forget process
     const subtitle = generateObservationSubtitle(toolName, toolInput, toolResponse);
@@ -322,9 +374,9 @@ export class MemoryHookService {
     const concepts = extractConcepts(toolName, toolInput, toolResponse);
 
     this.db!.prepare(`
-      INSERT INTO observations (id, session_id, project, tool_name, tool_input, tool_response, cwd, timestamp, type, title, prompt_number, files_read, files_modified, subtitle, narrative, facts, concepts)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(id, sessionId, project, toolName, inputStr, responseStr, cwd, now, type, title, promptNumber || null, JSON.stringify(filesRead), JSON.stringify(filesModified), subtitle, narrative, JSON.stringify(facts), JSON.stringify(concepts));
+      INSERT INTO observations (id, session_id, project, tool_name, tool_input, tool_response, cwd, timestamp, type, title, prompt_number, files_read, files_modified, subtitle, narrative, facts, concepts, content_hash)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(id, sessionId, project, toolName, inputStr, responseStr, cwd, now, type, title, promptNumber || null, JSON.stringify(filesRead), JSON.stringify(filesModified), subtitle, narrative, JSON.stringify(facts), JSON.stringify(concepts), contentHash);
 
     // Queue background tasks (embedding + AI enrichment)
     this.queueTask('embed', 'observations', id);
@@ -391,13 +443,111 @@ export class MemoryHookService {
   }
 
   /**
+   * Compress a single observation using AI.
+   * Replaces raw tool_input/tool_response with a dense compressed_summary.
+   * Sets is_compressed=1 to indicate the raw data has been replaced.
+   */
+  async compressObservation(id: string): Promise<boolean> {
+    await this.ensureInitialized();
+
+    const row = this.db!.prepare(
+      'SELECT tool_name, tool_input, tool_response, subtitle, narrative, is_compressed FROM observations WHERE id = ?'
+    ).get(id) as { tool_name: string; tool_input: string; tool_response: string; subtitle: string; narrative: string; is_compressed: number } | undefined;
+
+    if (!row || row.is_compressed === 1) return false;
+
+    const result = await compressObservationWithAI(
+      row.tool_name, row.tool_input, row.tool_response, row.subtitle, row.narrative
+    ).catch(() => null);
+
+    if (!result) return false;
+
+    // Write compressed summary and clear raw data to save space
+    this.db!.prepare(`
+      UPDATE observations
+      SET compressed_summary = ?, is_compressed = 1, tool_input = '{}', tool_response = '{}'
+      WHERE id = ?
+    `).run(result.compressed_summary, id);
+
+    return true;
+  }
+
+  /**
+   * Compress all observations for a session and generate a session digest.
+   * 1. Compresses each observation individually (10:1-25:1 ratio)
+   * 2. Generates a session-level digest from summaries (20:1-100:1 ratio)
+   * 3. Stores digest in session_digests table with embedding queued
+   */
+  async compressSessionObservations(sessionId: string): Promise<{ compressed: number; digestCreated: boolean }> {
+    await this.ensureInitialized();
+
+    // Get all uncompressed observations for this session
+    const rows = this.db!.prepare(
+      'SELECT id FROM observations WHERE session_id = ? AND is_compressed = 0'
+    ).all(sessionId) as { id: string }[];
+
+    let compressed = 0;
+    for (const row of rows) {
+      const ok = await this.compressObservation(row.id);
+      if (ok) compressed++;
+    }
+
+    // Generate session digest
+    let digestCreated = false;
+    const summary = this.db!.prepare(
+      'SELECT * FROM session_summaries WHERE session_id = ? ORDER BY created_at DESC LIMIT 1'
+    ).get(sessionId) as Record<string, unknown> | undefined;
+
+    if (summary) {
+      // Collect observation summaries for digest input
+      const obsRows = this.db!.prepare(
+        'SELECT compressed_summary, subtitle, title FROM observations WHERE session_id = ? ORDER BY timestamp ASC'
+      ).all(sessionId) as { compressed_summary: string | null; subtitle: string | null; title: string | null }[];
+
+      const obsSummaries = obsRows.map(r => r.compressed_summary || r.subtitle || r.title || '').filter(Boolean);
+
+      const filesModified = JSON.parse((summary.files_modified as string) || '[]') as string[];
+      const request = (summary.request as string) || '';
+      const completed = (summary.completed as string) || '';
+
+      const digest = await generateSessionDigestWithAI(
+        request, obsSummaries, completed, filesModified
+      ).catch(() => null);
+
+      if (digest) {
+        const project = (summary.project as string) || '';
+        this.db!.prepare(`
+          INSERT OR REPLACE INTO session_digests (session_id, project, digest, observation_count, created_at)
+          VALUES (?, ?, ?, ?, ?)
+        `).run(sessionId, project, digest.digest, obsRows.length, Date.now());
+
+        // Queue embedding for the digest
+        const digestRow = this.db!.prepare(
+          'SELECT id FROM session_digests WHERE session_id = ?'
+        ).get(sessionId) as { id: number } | undefined;
+        if (digestRow) {
+          this.queueTask('embed', 'session_digests', digestRow.id);
+        }
+
+        digestCreated = true;
+      }
+    }
+
+    return { compressed, digestCreated };
+  }
+
+  /**
    * Build embedding text for a session record based on table type.
    */
   private getSessionEmbeddingText(
-    table: 'observations' | 'user_prompts' | 'session_summaries',
+    table: 'observations' | 'user_prompts' | 'session_summaries' | 'session_digests',
     row: Record<string, unknown>
   ): string {
     if (table === 'observations') {
+      // Prefer compressed summary if available
+      if (row.compressed_summary) {
+        return (row.compressed_summary as string).trim();
+      }
       const parts = [row.title, row.subtitle, row.narrative];
       try {
         const concepts = JSON.parse((row.concepts as string) || '[]');
@@ -406,6 +556,8 @@ export class MemoryHookService {
       return (parts.filter(Boolean) as string[]).join(' ').trim();
     } else if (table === 'user_prompts') {
       return ((row.prompt_text as string) || '').trim();
+    } else if (table === 'session_digests') {
+      return ((row.digest as string) || '').trim();
     } else {
       const parts = [row.request, row.completed, row.next_steps, row.notes];
       return (parts.filter(Boolean) as string[]).join(' ').trim();
@@ -422,7 +574,7 @@ export class MemoryHookService {
    * Called from hook handlers — non-blocking, no model/API loading.
    */
   queueTask(
-    taskType: 'embed' | 'enrich',
+    taskType: 'embed' | 'enrich' | 'compress',
     table: string,
     recordId: string | number
   ): void {
@@ -515,6 +667,7 @@ export class MemoryHookService {
         observations: 'id',
         user_prompts: 'rowid',
         session_summaries: 'rowid',
+        session_digests: 'id',
       };
 
       // Atomic claim: SELECT + UPDATE in a single transaction to prevent race conditions
@@ -653,6 +806,56 @@ export class MemoryHookService {
   }
 
   /**
+   * Process compression tasks from the queue.
+   * Compresses observations and generates session digests.
+   * Uses lock file to prevent concurrent workers.
+   */
+  async processCompressionQueue(): Promise<number> {
+    await this.ensureInitialized();
+
+    const lockFile = path.join(path.dirname(this.dbPath), 'compress-worker.lock');
+    writeFileSync(lockFile, String(process.pid));
+
+    let count = 0;
+    try {
+      // Atomic claim: SELECT + UPDATE in a single transaction
+      const claimCompressTask = this.db!.transaction(() => {
+        const item = this.db!.prepare(
+          "SELECT id, target_table, target_id FROM task_queue WHERE task_type = 'compress' AND status = 'pending' ORDER BY id ASC LIMIT 1"
+        ).get() as { id: number; target_table: string; target_id: string } | undefined;
+        if (item) {
+          this.db!.prepare("UPDATE task_queue SET status = 'processing' WHERE id = ?").run(item.id);
+        }
+        return item;
+      });
+
+      while (count < MemoryHookService.WORKER_BATCH_LIMIT) {
+        const item = claimCompressTask();
+
+        if (!item) break;
+
+        try {
+          if (item.target_table === 'observations') {
+            await this.compressObservation(item.target_id);
+          } else if (item.target_table === 'sessions') {
+            // Compress all observations for a session + generate digest
+            await this.compressSessionObservations(item.target_id);
+          }
+          this.db!.prepare('DELETE FROM task_queue WHERE id = ?').run(item.id);
+          count++;
+        } catch {
+          this.db!.prepare("UPDATE task_queue SET status = 'pending' WHERE id = ?").run(item.id);
+          count++;
+        }
+      }
+    } finally {
+      try { unlinkSync(lockFile); } catch { /* ignore */ }
+    }
+
+    return count;
+  }
+
+  /**
    * Get observations for a session
    */
   async getSessionObservations(sessionId: string, limit: number = 50): Promise<Observation[]> {
@@ -727,7 +930,8 @@ export class MemoryHookService {
     sessions: SessionRecord[],
     prompts: UserPrompt[],
     summaries: SessionSummary[],
-    project: string
+    project: string,
+    config: ContextConfig = DEFAULT_CONTEXT_CONFIG
   ): string {
     const lines: string[] = [];
 
@@ -735,17 +939,19 @@ export class MemoryHookService {
     lines.push('');
 
     // Tool-usage instruction header (CRITICAL for LLM tool adoption)
-    lines.push('> **Memory tools available** — Use MCP tools to search and manage project memory:');
-    lines.push('> `memory_search(query)` → `memory_timeline(anchor)` → `memory_details(ids)` (3-layer workflow)');
-    lines.push('> Also: `memory_save`, `memory_recall`, `memory_list`, `memory_delete`, `memory_update`, `memory_status`');
-    lines.push('');
+    if (config.showToolGuidance) {
+      lines.push('> **Memory tools available** — Use MCP tools to search and manage project memory:');
+      lines.push('> `memory_search(query)` → `memory_timeline(anchor)` → `memory_details(ids)` (3-layer workflow)');
+      lines.push('> Also: `memory_save`, `memory_recall`, `memory_list`, `memory_delete`, `memory_update`, `memory_status`');
+      lines.push('');
+    }
 
     // Structured summaries from previous sessions (most valuable context)
-    if (summaries.length > 0) {
+    if (config.showSummaries && summaries.length > 0) {
       lines.push('## Previous Session Summaries');
       lines.push('');
 
-      for (const summary of summaries.slice(0, 3)) {
+      for (const summary of summaries.slice(0, config.maxSummaries)) {
         const time = this.formatRelativeTime(summary.createdAt);
         lines.push(`### Session (${time})`);
         if (summary.request) {
@@ -765,43 +971,78 @@ export class MemoryHookService {
     }
 
     // Recent user prompts (shows what user has been asking)
-    if (prompts.length > 0) {
+    if (config.showPrompts && prompts.length > 0) {
       lines.push('## Recent User Prompts');
       lines.push('');
 
-      for (const prompt of prompts.slice(0, 10)) {
+      for (const prompt of prompts.slice(0, config.maxPrompts)) {
         const time = this.formatRelativeTime(prompt.createdAt);
         lines.push(`- (${time}) ${prompt.promptText.substring(0, 150)}${prompt.promptText.length > 150 ? '...' : ''}`);
       }
       lines.push('');
     }
 
-    // Recent observations with enriched details and IDs
-    if (observations.length > 0) {
-      lines.push('## Recent Activity');
-      lines.push('');
+    // Recent observations — group by prompt when available
+    if (config.showObservations && observations.length > 0) {
+      const maxObs = config.maxObservations;
+      const slicedObs = observations.slice(0, maxObs);
 
-      for (const obs of observations.slice(0, 10)) {
-        const time = this.formatRelativeTime(obs.timestamp);
-        const icon = this.getObservationIcon(obs.type);
-        const detail = obs.subtitle || obs.title || obs.toolName;
-        lines.push(`- ${icon} **${detail}** (${time}) [${obs.id}]`);
-        if (obs.narrative) {
-          lines.push(`  ${obs.narrative}`);
+      // Check if we have prompt-linked observations to group
+      const hasPromptLinks = prompts.length > 0 && slicedObs.some(o => o.promptNumber);
+
+      if (hasPromptLinks) {
+        lines.push('## Recent Activity');
+        lines.push('');
+
+        // Group observations by prompt number
+        const obsByPrompt = new Map<number, Observation[]>();
+        for (const obs of slicedObs) {
+          const pn = obs.promptNumber || 0;
+          if (!obsByPrompt.has(pn)) obsByPrompt.set(pn, []);
+          obsByPrompt.get(pn)!.push(obs);
         }
-        if (obs.concepts && obs.concepts.length > 0) {
-          lines.push(`  *Concepts: ${obs.concepts.join(', ')}*`);
+
+        for (const [pn, obsGroup] of obsByPrompt) {
+          const prompt = prompts.find(p => p.promptNumber === pn);
+          if (prompt) {
+            lines.push(`### Prompt #${pn}: ${prompt.promptText.substring(0, 80)}${prompt.promptText.length > 80 ? '...' : ''}`);
+          } else if (pn > 0) {
+            lines.push(`### Prompt #${pn}`);
+          }
+          for (const obs of obsGroup) {
+            const icon = this.getObservationIcon(obs.type);
+            const detail = obs.compressedSummary || obs.subtitle || obs.title || obs.toolName;
+            lines.push(`- ${icon} **${detail}** [${obs.id}]`);
+          }
+          lines.push('');
         }
+      } else {
+        // Flat list (no prompt grouping)
+        lines.push('## Recent Activity');
+        lines.push('');
+
+        for (const obs of slicedObs) {
+          const time = this.formatRelativeTime(obs.timestamp);
+          const icon = this.getObservationIcon(obs.type);
+          const detail = obs.compressedSummary || obs.subtitle || obs.title || obs.toolName;
+          lines.push(`- ${icon} **${detail}** (${time}) [${obs.id}]`);
+          if (obs.narrative) {
+            lines.push(`  ${obs.narrative}`);
+          }
+          if (obs.concepts && obs.concepts.length > 0) {
+            lines.push(`  *Concepts: ${obs.concepts.join(', ')}*`);
+          }
+        }
+        lines.push('');
       }
-      lines.push('');
     }
 
     // Previous sessions (fallback if no structured summaries)
-    if (summaries.length === 0 && sessions.length > 0) {
+    if (config.showSummaries && summaries.length === 0 && sessions.length > 0) {
       lines.push('## Previous Sessions');
       lines.push('');
 
-      for (const session of sessions.slice(0, 3)) {
+      for (const session of sessions.slice(0, config.maxSummaries)) {
         const time = this.formatRelativeTime(session.startedAt);
         const status = session.status === 'completed' ? '✓' : '→';
         lines.push(`### ${status} Session (${time})`);
@@ -836,7 +1077,9 @@ export class MemoryHookService {
       lines.push('');
     }
 
-    return lines.join('\n');
+    // Wrap in XML tags with usage disclaimer
+    const content = lines.join('\n');
+    return `<agentkits-memory-context>\n${content}\nUse these naturally when relevant. Don't force them into every response.\n</agentkits-memory-context>`;
   }
 
   /**
@@ -1056,7 +1299,8 @@ export class MemoryHookService {
         ended_at INTEGER,
         observation_count INTEGER DEFAULT 0,
         summary TEXT,
-        status TEXT DEFAULT 'active'
+        status TEXT DEFAULT 'active',
+        parent_session_id TEXT
       )
     `);
 
@@ -1080,6 +1324,9 @@ export class MemoryHookService {
         facts TEXT DEFAULT '[]',
         concepts TEXT DEFAULT '[]',
         embedding BLOB,
+        content_hash TEXT,
+        compressed_summary TEXT,
+        is_compressed INTEGER DEFAULT 0,
         FOREIGN KEY (session_id) REFERENCES sessions(session_id)
       )
     `);
@@ -1093,6 +1340,7 @@ export class MemoryHookService {
         prompt_text TEXT NOT NULL,
         created_at INTEGER NOT NULL,
         embedding BLOB,
+        content_hash TEXT,
         UNIQUE(session_id, prompt_number),
         FOREIGN KEY (session_id) REFERENCES sessions(session_id)
       )
@@ -1130,7 +1378,20 @@ export class MemoryHookService {
       )
     `);
 
-    // Indexes
+    // Session digests — compressed session-level summaries
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS session_digests (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id TEXT NOT NULL UNIQUE,
+        project TEXT NOT NULL,
+        digest TEXT NOT NULL,
+        observation_count INTEGER,
+        created_at INTEGER NOT NULL,
+        embedding BLOB
+      )
+    `);
+
+    // Base indexes (columns that exist in original schema)
     this.db.exec('CREATE INDEX IF NOT EXISTS idx_obs_session ON observations(session_id)');
     this.db.exec('CREATE INDEX IF NOT EXISTS idx_obs_project ON observations(project)');
     this.db.exec('CREATE INDEX IF NOT EXISTS idx_obs_timestamp ON observations(timestamp)');
@@ -1138,10 +1399,15 @@ export class MemoryHookService {
     this.db.exec('CREATE INDEX IF NOT EXISTS idx_prompts_session ON user_prompts(session_id)');
     this.db.exec('CREATE INDEX IF NOT EXISTS idx_summaries_session ON session_summaries(session_id)');
     this.db.exec('CREATE INDEX IF NOT EXISTS idx_summaries_project ON session_summaries(project)');
+    this.db.exec('CREATE INDEX IF NOT EXISTS idx_digests_project ON session_digests(project)');
     this.db.exec('CREATE INDEX IF NOT EXISTS idx_task_queue_status ON task_queue(status, task_type)');
 
-    // Migration: add prompt_number to existing observations table
+    // Migration: add new columns to existing tables
     this.migrateSchema();
+
+    // Indexes on migrated columns (must run AFTER migration)
+    this.db.exec('CREATE INDEX IF NOT EXISTS idx_obs_content_hash ON observations(content_hash)');
+    this.db.exec('CREATE INDEX IF NOT EXISTS idx_prompts_hash ON user_prompts(content_hash)');
   }
 
   /**
@@ -1162,6 +1428,9 @@ export class MemoryHookService {
         ['narrative', 'ALTER TABLE observations ADD COLUMN narrative TEXT'],
         ['facts', "ALTER TABLE observations ADD COLUMN facts TEXT DEFAULT '[]'"],
         ['concepts', "ALTER TABLE observations ADD COLUMN concepts TEXT DEFAULT '[]'"],
+        ['content_hash', 'ALTER TABLE observations ADD COLUMN content_hash TEXT'],
+        ['compressed_summary', 'ALTER TABLE observations ADD COLUMN compressed_summary TEXT'],
+        ['is_compressed', 'ALTER TABLE observations ADD COLUMN is_compressed INTEGER DEFAULT 0'],
       ];
 
       for (const [column, sql] of migrations) {
@@ -1169,6 +1438,22 @@ export class MemoryHookService {
           this.db.exec(sql);
         }
       }
+
+      // Migrate user_prompts: add content_hash
+      try {
+        const promptCols = this.db.prepare("PRAGMA table_info(user_prompts)").all() as Array<{ name: string }>;
+        if (!promptCols.some(c => c.name === 'content_hash')) {
+          this.db.exec('ALTER TABLE user_prompts ADD COLUMN content_hash TEXT');
+        }
+      } catch { /* ignore */ }
+
+      // Migrate sessions: add parent_session_id
+      try {
+        const sessionCols = this.db.prepare("PRAGMA table_info(sessions)").all() as Array<{ name: string }>;
+        if (!sessionCols.some(c => c.name === 'parent_session_id')) {
+          this.db.exec('ALTER TABLE sessions ADD COLUMN parent_session_id TEXT');
+        }
+      } catch { /* ignore */ }
 
       // Add embedding column to all session tables
       for (const table of ['observations', 'user_prompts', 'session_summaries']) {
@@ -1193,6 +1478,7 @@ export class MemoryHookService {
       observationCount: row.observation_count as number,
       summary: row.summary as string | undefined,
       status: row.status as 'active' | 'completed' | 'abandoned',
+      parentSessionId: row.parent_session_id as string | undefined,
     };
   }
 
@@ -1215,6 +1501,9 @@ export class MemoryHookService {
       narrative: row.narrative as string | undefined,
       facts: JSON.parse((row.facts as string) || '[]'),
       concepts: JSON.parse((row.concepts as string) || '[]'),
+      contentHash: row.content_hash as string | undefined,
+      compressedSummary: row.compressed_summary as string | undefined,
+      isCompressed: (row.is_compressed as number) === 1,
     };
   }
 
