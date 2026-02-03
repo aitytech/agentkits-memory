@@ -64,13 +64,16 @@ export interface MemorySaveArgs {
 }
 
 /**
- * Memory search arguments
+ * Memory search arguments (with advanced filters)
  */
 export interface MemorySearchArgs {
   query: string;
   limit?: number;
   category?: string;
   tags?: string[];
+  dateStart?: string;  // ISO 8601
+  dateEnd?: string;    // ISO 8601
+  orderBy?: 'relevance' | 'date_asc' | 'date_desc';
 }
 
 /**
@@ -104,6 +107,22 @@ export interface MemoryTimelineArgs {
  */
 export interface MemoryDetailsArgs {
   ids: string[];  // Memory IDs from search/timeline
+}
+
+/**
+ * Memory delete arguments
+ */
+export interface MemoryDeleteArgs {
+  ids: string[];  // Memory IDs to delete
+}
+
+/**
+ * Memory update arguments
+ */
+export interface MemoryUpdateArgs {
+  id: string;       // Memory ID to update
+  content?: string;  // New content (replaces existing)
+  tags?: string;     // New comma-separated tags (replaces existing)
 }
 
 /**

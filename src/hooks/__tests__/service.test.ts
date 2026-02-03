@@ -8,6 +8,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { existsSync, rmSync, mkdirSync } from 'node:fs';
 import * as path from 'node:path';
 import { MemoryHookService, createHookService } from '../service.js';
+import { _setQueryFunctionForTesting, resetAIEnrichmentCache, type QueryFunction } from '../ai-enrichment.js';
 
 const TEST_DIR = path.join(process.cwd(), '.test-memory-hooks');
 
@@ -247,6 +248,46 @@ describe('MemoryHookService', () => {
       expect(context.markdown).toContain('test-project');
     });
 
+    it('should include tool-usage instructions in context header', async () => {
+      await service.initSession('session-1', 'test-project', 'Test');
+      await service.storeObservation('session-1', 'test-project', 'Read', {}, {}, TEST_DIR);
+
+      const context = await service.getContext('test-project');
+
+      expect(context.markdown).toContain('Memory tools available');
+      expect(context.markdown).toContain('memory_search');
+      expect(context.markdown).toContain('memory_timeline');
+      expect(context.markdown).toContain('memory_details');
+      expect(context.markdown).toContain('memory_save');
+      expect(context.markdown).toContain('memory_recall');
+      expect(context.markdown).toContain('memory_delete');
+      expect(context.markdown).toContain('memory_update');
+    });
+
+    it('should include observation IDs in context', async () => {
+      await service.initSession('session-1', 'test-project');
+      await service.storeObservation('session-1', 'test-project', 'Read', { file_path: 'file.ts' }, {}, TEST_DIR);
+
+      const context = await service.getContext('test-project');
+      const obs = context.recentObservations[0];
+
+      // Observation ID should appear in markdown (format: [obs_xxxx_yyyy])
+      expect(context.markdown).toContain(`[${obs.id}]`);
+    });
+
+    it('should include token economics footer when context exists', async () => {
+      await service.initSession('session-1', 'test-project', 'Test');
+      await service.storeObservation('session-1', 'test-project', 'Read', {}, {}, TEST_DIR);
+      await service.completeSession('session-1', 'Done');
+
+      const context = await service.getContext('test-project');
+
+      expect(context.markdown).toContain('tokens shown');
+      expect(context.markdown).toContain('tokens available');
+      expect(context.markdown).toContain('memory_search');
+      expect(context.markdown).toContain('memory_details');
+    });
+
     it('should include all observation type icons in context', async () => {
       await service.initSession('session-1', 'test-project');
 
@@ -421,6 +462,117 @@ describe('MemoryHookService', () => {
       const summary = await service.generateSummary('session-1');
 
       expect(summary).toContain('7 file(s) modified');
+    });
+  });
+
+  describe('enrichObservation', () => {
+    const originalEnv = process.env.AGENTKITS_AI_ENRICHMENT;
+
+    beforeEach(() => {
+      delete process.env.AGENTKITS_AI_ENRICHMENT;
+      resetAIEnrichmentCache();
+    });
+
+    afterEach(() => {
+      _setQueryFunctionForTesting(null);
+      resetAIEnrichmentCache();
+      if (originalEnv === undefined) {
+        delete process.env.AGENTKITS_AI_ENRICHMENT;
+      } else {
+        process.env.AGENTKITS_AI_ENRICHMENT = originalEnv;
+      }
+    });
+
+    it('should enrich an existing observation with AI data', async () => {
+      await service.initSession('session-1', 'test-project');
+      const obs = await service.storeObservation(
+        'session-1', 'test-project', 'Read',
+        { file_path: 'auth.ts' }, { content: 'export class Auth {}' }, TEST_DIR
+      );
+
+      // Reset cache and set up mock AI enrichment
+      resetAIEnrichmentCache();
+      const validResponse = JSON.stringify({
+        subtitle: 'Examining auth module',
+        narrative: 'Read the auth module to understand login flow.',
+        facts: ['File has 200 lines', 'Uses JWT tokens'],
+        concepts: ['authentication', 'jwt'],
+      });
+      const mockFn: QueryFunction = () => {
+        return (async function* () {
+          yield { type: 'result', subtype: 'success', result: validResponse };
+        })();
+      };
+      _setQueryFunctionForTesting(mockFn);
+
+      const result = await service.enrichObservation(obs.id);
+      expect(result).toBe(true);
+
+      // Verify the observation was updated in DB
+      const observations = await service.getSessionObservations('session-1');
+      expect(observations[0].subtitle).toBe('Examining auth module');
+      expect(observations[0].narrative).toBe('Read the auth module to understand login flow.');
+      expect(observations[0].facts).toContain('File has 200 lines');
+      expect(observations[0].concepts).toContain('jwt');
+    });
+
+    it('should return false for non-existent observation', async () => {
+      await service.initialize();
+      const result = await service.enrichObservation('obs_nonexistent_0000');
+      expect(result).toBe(false);
+    });
+
+    it('should return false when AI enrichment returns null', async () => {
+      await service.initSession('session-1', 'test-project');
+      const obs = await service.storeObservation(
+        'session-1', 'test-project', 'Read', {}, {}, TEST_DIR
+      );
+
+      // Mock AI that returns invalid response
+      const mockFn: QueryFunction = () => {
+        return (async function* () {
+          yield { type: 'result', subtype: 'success', result: 'not valid json' };
+        })();
+      };
+      _setQueryFunctionForTesting(mockFn);
+
+      const result = await service.enrichObservation(obs.id);
+      expect(result).toBe(false);
+
+      // Original template data should still be intact
+      const observations = await service.getSessionObservations('session-1');
+      expect(observations[0].subtitle).toBeDefined();
+      expect(observations[0].subtitle.length).toBeGreaterThan(0);
+    });
+
+    it('should return false when AI enrichment throws', async () => {
+      await service.initSession('session-1', 'test-project');
+      const obs = await service.storeObservation(
+        'session-1', 'test-project', 'Read', {}, {}, TEST_DIR
+      );
+
+      // Mock AI that throws
+      const mockFn: QueryFunction = () => {
+        throw new Error('SDK error');
+      };
+      _setQueryFunctionForTesting(mockFn);
+
+      const result = await service.enrichObservation(obs.id);
+      expect(result).toBe(false);
+    });
+
+    it('should preserve template data when enrichment is disabled', async () => {
+      await service.initSession('session-1', 'test-project');
+      const obs = await service.storeObservation(
+        'session-1', 'test-project', 'Read',
+        { file_path: 'src/index.ts' }, { content: 'hello' }, TEST_DIR
+      );
+
+      // Template data should be present immediately
+      expect(obs.subtitle).toBeDefined();
+      expect(obs.subtitle.length).toBeGreaterThan(0);
+      expect(obs.narrative).toBeDefined();
+      expect(obs.narrative.length).toBeGreaterThan(0);
     });
   });
 

@@ -22,7 +22,7 @@
     "agentkits-memory-setup": "./dist/cli/setup.js"
   },
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && chmod +x dist/hooks/cli.js dist/mcp/server.js dist/cli/viewer.js dist/cli/web-viewer.js dist/cli/save.js dist/cli/setup.js",
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",
     "typecheck": "tsc --noEmit",

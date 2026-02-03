@@ -294,19 +294,19 @@ export class MemoryHookService {
     const promptNumber = this.getPromptNumber(sessionId);
     const { filesRead, filesModified } = extractFilePaths(toolName, toolInput);
 
-    // Truncate large responses (needed for both AI and template extraction)
+    // Truncate large responses
     const inputStr = JSON.stringify(toolInput || {});
     const responseStr = truncate(
       JSON.stringify(toolResponse || {}),
       this.config.maxResponseSize
     );
 
-    // Try AI enrichment first, fall back to template-based extraction
-    const aiResult = await enrichWithAI(toolName, inputStr, responseStr).catch(() => null);
-    const subtitle = aiResult?.subtitle || generateObservationSubtitle(toolName, toolInput, toolResponse);
-    const narrative = aiResult?.narrative || generateObservationNarrative(toolName, toolInput, toolResponse);
-    const facts = aiResult?.facts || extractFacts(toolName, toolInput, toolResponse);
-    const concepts = aiResult?.concepts || extractConcepts(toolName, toolInput, toolResponse);
+    // Template-based extraction only (fast, <10ms)
+    // AI enrichment runs asynchronously via fire-and-forget process
+    const subtitle = generateObservationSubtitle(toolName, toolInput, toolResponse);
+    const narrative = generateObservationNarrative(toolName, toolInput, toolResponse);
+    const facts = extractFacts(toolName, toolInput, toolResponse);
+    const concepts = extractConcepts(toolName, toolInput, toolResponse);
 
     this.db!.prepare(`
       INSERT INTO observations (id, session_id, project, tool_name, tool_input, tool_response, cwd, timestamp, type, title, prompt_number, files_read, files_modified, subtitle, narrative, facts, concepts)
@@ -339,6 +339,38 @@ export class MemoryHookService {
       facts,
       concepts,
     };
+  }
+
+  /**
+   * Enrich an existing observation with AI-generated data.
+   * Called from a background process after the observation is saved.
+   * Updates subtitle, narrative, facts, and concepts in-place.
+   */
+  async enrichObservation(id: string): Promise<boolean> {
+    await this.ensureInitialized();
+
+    const row = this.db!.prepare(
+      'SELECT tool_name, tool_input, tool_response FROM observations WHERE id = ?'
+    ).get(id) as { tool_name: string; tool_input: string; tool_response: string } | undefined;
+
+    if (!row) return false;
+
+    const aiResult = await enrichWithAI(row.tool_name, row.tool_input, row.tool_response).catch(() => null);
+    if (!aiResult) return false;
+
+    this.db!.prepare(`
+      UPDATE observations
+      SET subtitle = ?, narrative = ?, facts = ?, concepts = ?
+      WHERE id = ?
+    `).run(
+      aiResult.subtitle,
+      aiResult.narrative,
+      JSON.stringify(aiResult.facts),
+      JSON.stringify(aiResult.concepts),
+      id
+    );
+
+    return true;
   }
 
   /**
@@ -422,7 +454,11 @@ export class MemoryHookService {
 
     lines.push(`# Memory Context - ${project}`);
     lines.push('');
-    lines.push('*AgentKits CPS - Auto-captured session memory*');
+
+    // Tool-usage instruction header (CRITICAL for LLM tool adoption)
+    lines.push('> **Memory tools available** — Use MCP tools to search and manage project memory:');
+    lines.push('> `memory_search(query)` → `memory_timeline(anchor)` → `memory_details(ids)` (3-layer workflow)');
+    lines.push('> Also: `memory_save`, `memory_recall`, `memory_list`, `memory_delete`, `memory_update`, `memory_status`');
     lines.push('');
 
     // Structured summaries from previous sessions (most valuable context)
@@ -461,7 +497,7 @@ export class MemoryHookService {
       lines.push('');
     }
 
-    // Recent observations with enriched details
+    // Recent observations with enriched details and IDs
     if (observations.length > 0) {
       lines.push('## Recent Activity');
       lines.push('');
@@ -470,7 +506,7 @@ export class MemoryHookService {
         const time = this.formatRelativeTime(obs.timestamp);
         const icon = this.getObservationIcon(obs.type);
         const detail = obs.subtitle || obs.title || obs.toolName;
-        lines.push(`- ${icon} **${detail}** (${time})`);
+        lines.push(`- ${icon} **${detail}** (${time}) [${obs.id}]`);
         if (obs.narrative) {
           lines.push(`  ${obs.narrative}`);
         }
@@ -507,6 +543,17 @@ export class MemoryHookService {
     // No context available
     if (observations.length === 0 && sessions.length === 0 && prompts.length === 0) {
       lines.push('*No previous session context available.*');
+      lines.push('');
+    }
+
+    // Token economics footer (motivates LLM to use progressive disclosure)
+    const totalObs = observations.length;
+    const totalSessions = summaries.length || sessions.length;
+    if (totalObs > 0 || totalSessions > 0) {
+      const estimatedFullTokens = (totalObs * 500) + (totalSessions * 200);
+      const contextTokens = lines.join('\n').length / 4; // rough estimate
+      lines.push('---');
+      lines.push(`*Context: ~${Math.round(contextTokens)} tokens shown. ~${estimatedFullTokens.toLocaleString()} tokens available via \`memory_search\` → \`memory_details\`.*`);
       lines.push('');
     }
 

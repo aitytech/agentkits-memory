@@ -18,3 +18,5 @@ export {
 } from './local-embeddings.js';
 
 export { PersistentEmbeddingCache, createPersistentEmbeddingCache } from './embedding-cache.js';
+
+export { EmbeddingSubprocess, type EmbeddingSubprocessConfig } from './embedding-subprocess.js';

@@ -13,6 +13,7 @@ import { ContextHook, createContextHook } from '../context.js';
 import { SessionInitHook, createSessionInitHook } from '../session-init.js';
 import { ObservationHook, createObservationHook } from '../observation.js';
 import { SummarizeHook, createSummarizeHook } from '../summarize.js';
+import { UserMessageHook, createUserMessageHook } from '../user-message.js';
 
 const TEST_DIR = path.join(process.cwd(), '.test-hook-handlers');
 
@@ -74,15 +75,19 @@ describe('Hook Handlers', () => {
   });
 
   describe('ContextHook', () => {
-    it('should return no context for new project', async () => {
+    it('should return empty-state guidance for new project', async () => {
       const hook = trackHook(createContextHook(TEST_DIR));
       const input = createTestInput();
 
       const result = await hook.execute(input);
 
       expect(result.continue).toBe(true);
-      expect(result.suppressOutput).toBe(true);
-      expect(result.additionalContext).toBeUndefined();
+      expect(result.suppressOutput).toBe(false);
+      // Should inject guidance even on empty state
+      expect(result.additionalContext).toBeDefined();
+      expect(result.additionalContext).toContain('Memory tools available');
+      expect(result.additionalContext).toContain('memory_save');
+      expect(result.additionalContext).toContain('Do NOT call');
     });
 
     it('should return context with prompts and summaries', async () => {
@@ -125,6 +130,9 @@ describe('Hook Handlers', () => {
       expect(result.additionalContext).toContain('Recent User Prompts');
       expect(result.additionalContext).toContain('Add tests');
       expect(result.additionalContext).toContain('auth.ts');
+      // Should include tool-usage instructions
+      expect(result.additionalContext).toContain('Memory tools available');
+      expect(result.additionalContext).toContain('memory_search');
     });
 
     it('should handle errors gracefully', async () => {
@@ -302,8 +310,8 @@ describe('Hook Handlers', () => {
       const input = createTestInput({
         sessionId: 'new-session',
         toolName: 'Read',
-        toolInput: {},
-        toolResponse: {},
+        toolInput: { file_path: '/test/file.ts' },
+        toolResponse: { content: 'test' },
       });
 
       const result = await hook.execute(input);
@@ -320,12 +328,91 @@ describe('Hook Handlers', () => {
       expect(session).not.toBeNull();
     });
 
+    it('should return fast with template data (no AI blocking)', async () => {
+      // Initialize session
+      const initHook = trackHook(createSessionInitHook(TEST_DIR));
+      await initHook.execute(createTestInput({ prompt: 'Test task' }));
+      await initHook.shutdown();
+
+      const hook = trackHook(createObservationHook(TEST_DIR));
+      const input = createTestInput({
+        toolName: 'Read',
+        toolInput: { file_path: '/path/to/auth.ts' },
+        toolResponse: { content: 'export class Auth {}' },
+      });
+
+      // Measure execution time — should be fast (<500ms) since AI is fire-and-forget
+      const start = Date.now();
+      const result = await hook.execute(input);
+      const elapsed = Date.now() - start;
+      await hook.shutdown();
+
+      expect(result.continue).toBe(true);
+      expect(result.suppressOutput).toBe(true);
+      // Should complete quickly (template-only, no AI blocking)
+      expect(elapsed).toBeLessThan(2000);
+
+      // Verify template data was stored immediately
+      const service = new MemoryHookService(TEST_DIR);
+      await service.initialize();
+      const observations = await service.getSessionObservations('test-session-123');
+      await service.shutdown();
+
+      expect(observations.length).toBe(1);
+      expect(observations[0].subtitle).toBeDefined();
+      expect(observations[0].subtitle.length).toBeGreaterThan(0);
+      expect(observations[0].narrative).toBeDefined();
+      expect(observations[0].narrative.length).toBeGreaterThan(0);
+    });
+
+    it('should not spawn enrichment when AGENTKITS_AI_ENRICHMENT=false', async () => {
+      const originalEnv = process.env.AGENTKITS_AI_ENRICHMENT;
+      process.env.AGENTKITS_AI_ENRICHMENT = 'false';
+
+      try {
+        const initHook = trackHook(createSessionInitHook(TEST_DIR));
+        await initHook.execute(createTestInput({ prompt: 'Test' }));
+        await initHook.shutdown();
+
+        const hook = trackHook(createObservationHook(TEST_DIR));
+        const input = createTestInput({
+          toolName: 'Write',
+          toolInput: { file_path: 'test.ts' },
+          toolResponse: {},
+        });
+
+        const result = await hook.execute(input);
+        await hook.shutdown();
+
+        // Should still store observation successfully
+        expect(result.continue).toBe(true);
+
+        const service = new MemoryHookService(TEST_DIR);
+        await service.initialize();
+        const observations = await service.getSessionObservations('test-session-123');
+        await service.shutdown();
+
+        expect(observations.length).toBe(1);
+        expect(observations[0].toolName).toBe('Write');
+      } finally {
+        if (originalEnv === undefined) {
+          delete process.env.AGENTKITS_AI_ENRICHMENT;
+        } else {
+          process.env.AGENTKITS_AI_ENRICHMENT = originalEnv;
+        }
+      }
+    });
+
     it('should handle errors gracefully', async () => {
       const hook = new ObservationHook({
         initialize: async () => { throw new Error('Test error'); },
       } as unknown as MemoryHookService);
 
-      const input = createTestInput({ toolName: 'Read' });
+      const input = createTestInput({
+        toolName: 'Read',
+        toolInput: { file_path: '/test/file.ts' },
+        toolResponse: { content: 'test' },
+      });
       const result = await hook.execute(input);
 
       expect(result.continue).toBe(true);
@@ -398,6 +485,66 @@ describe('Hook Handlers', () => {
       expect(result.continue).toBe(true);
       expect(result.suppressOutput).toBe(true);
       expect(result.error).toBeDefined();
+    });
+  });
+
+  describe('UserMessageHook', () => {
+    it('should display status for new project (no context)', async () => {
+      const stderrSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const hook = trackHook(createUserMessageHook(TEST_DIR));
+      const input = createTestInput();
+
+      const result = await hook.execute(input);
+
+      expect(result.continue).toBe(true);
+      expect(result.suppressOutput).toBe(true);
+      // Should write to stderr
+      expect(stderrSpy).toHaveBeenCalled();
+      const output = stderrSpy.mock.calls.map(c => c[0]).join('\n');
+      expect(output).toContain('AgentKits Memory Loaded');
+      expect(output).toContain('Fresh memory');
+      expect(output).toContain('memory_save');
+      stderrSpy.mockRestore();
+    });
+
+    it('should display stats when context exists', async () => {
+      // Set up session with observations and prompts
+      const service = new MemoryHookService(TEST_DIR);
+      await service.initSession('old-session', 'test-project', 'Test task');
+      await service.saveUserPrompt('old-session', 'test-project', 'Test task');
+      await service.storeObservation('old-session', 'test-project', 'Read', { file_path: 'file.ts' }, {}, TEST_DIR);
+      await service.completeSession('old-session', 'Done');
+      await service.shutdown();
+
+      const stderrSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const hook = trackHook(createUserMessageHook(TEST_DIR));
+      const input = createTestInput({ sessionId: 'new-session' });
+
+      const result = await hook.execute(input);
+
+      expect(result.continue).toBe(true);
+      expect(result.suppressOutput).toBe(true);
+      expect(stderrSpy).toHaveBeenCalled();
+      const output = stderrSpy.mock.calls.map(c => c[0]).join('\n');
+      expect(output).toContain('AgentKits Memory Loaded');
+      expect(output).toContain('observation');
+      expect(output).toContain('memory_search');
+      stderrSpy.mockRestore();
+    });
+
+    it('should handle errors gracefully', async () => {
+      const hook = new UserMessageHook({
+        initialize: async () => { throw new Error('Test error'); },
+      } as unknown as MemoryHookService);
+
+      const stderrSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const input = createTestInput();
+      const result = await hook.execute(input);
+
+      expect(result.continue).toBe(true);
+      expect(result.suppressOutput).toBe(true);
+      expect(result.error).toBeDefined();
+      stderrSpy.mockRestore();
     });
   });
 });

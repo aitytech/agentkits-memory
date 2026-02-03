@@ -11,6 +11,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import {
   enrichWithAI,
   isAIEnrichmentAvailable,
+  isAIEnrichmentEnabled,
   resetAIEnrichmentCache,
   parseAIResponse,
   buildExtractionPrompt,
@@ -78,6 +79,33 @@ describe('AI Enrichment Module', () => {
       if (result !== null) {
         expect(typeof result.subtitle).toBe('string');
       }
+    });
+  });
+
+  describe('isAIEnrichmentEnabled (sync)', () => {
+    it('should return false when env=false', () => {
+      process.env.AGENTKITS_AI_ENRICHMENT = 'false';
+      expect(isAIEnrichmentEnabled()).toBe(false);
+    });
+
+    it('should return false when env=0', () => {
+      process.env.AGENTKITS_AI_ENRICHMENT = '0';
+      expect(isAIEnrichmentEnabled()).toBe(false);
+    });
+
+    it('should return true when env=true', () => {
+      process.env.AGENTKITS_AI_ENRICHMENT = 'true';
+      expect(isAIEnrichmentEnabled()).toBe(true);
+    });
+
+    it('should return true when env=1', () => {
+      process.env.AGENTKITS_AI_ENRICHMENT = '1';
+      expect(isAIEnrichmentEnabled()).toBe(true);
+    });
+
+    it('should return true when env not set (auto-detect optimistic)', () => {
+      delete process.env.AGENTKITS_AI_ENRICHMENT;
+      expect(isAIEnrichmentEnabled()).toBe(true);
     });
   });
 

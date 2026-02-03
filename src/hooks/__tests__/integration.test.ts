@@ -87,7 +87,10 @@ describe('Hook System Integration', () => {
       );
 
       expect(contextResult.continue).toBe(true);
-      expect(contextResult.additionalContext).toBeUndefined(); // No previous sessions
+      // Empty state now injects guidance (save-first workflow)
+      expect(contextResult.additionalContext).toBeDefined();
+      expect(contextResult.additionalContext).toContain('memory_save');
+      expect(contextResult.additionalContext).toContain('Do NOT call');
       await contextHook.shutdown();
 
       // 2. User Prompt Submit - Session Init Hook
@@ -333,8 +336,8 @@ describe('Hook System Integration', () => {
         sessionId,
         project,
         toolName: 'Read',
-        toolInput: {},
-        toolResponse: {},
+        toolInput: { file_path: '/test/file.ts' },
+        toolResponse: { content: 'test content' },
       }));
 
       // Another successful observation
@@ -342,8 +345,8 @@ describe('Hook System Integration', () => {
         sessionId,
         project,
         toolName: 'Write',
-        toolInput: {},
-        toolResponse: {},
+        toolInput: { file_path: '/test/output.ts' },
+        toolResponse: { success: true },
       }));
       await obsHook.shutdown();
 
@@ -376,8 +379,8 @@ describe('Hook System Integration', () => {
         sessionId: 'multi-1',
         project,
         toolName: 'Read',
-        toolInput: {},
-        toolResponse: {},
+        toolInput: { file_path: '/test/file1.ts' },
+        toolResponse: { content: 'content1' },
       }));
       await obsHook1.shutdown();
 
@@ -386,8 +389,8 @@ describe('Hook System Integration', () => {
         sessionId: 'multi-2',
         project,
         toolName: 'Write',
-        toolInput: {},
-        toolResponse: {},
+        toolInput: { file_path: '/test/file2.ts' },
+        toolResponse: { success: true },
       }));
       await obsHook2.shutdown();
 

@@ -13,6 +13,8 @@
  *   session-init  - UserPromptSubmit: initialize session
  *   observation   - PostToolUse: capture tool usage
  *   summarize     - Stop: generate session summary
+ *   user-message  - SessionStart: display status to user (stderr)
+ *   enrich <id> [cwd] - Background: AI-enrich a stored observation
  *
  * @module @agentkits/memory/hooks/cli
  */
@@ -22,6 +24,8 @@ import { createContextHook } from './context.js';
 import { createSessionInitHook } from './session-init.js';
 import { createObservationHook } from './observation.js';
 import { createSummarizeHook } from './summarize.js';
+import { createUserMessageHook } from './user-message.js';
+import { MemoryHookService } from './service.js';
 
 /**
  * Read stdin until EOF
@@ -65,8 +69,21 @@ async function main(): Promise<void> {
 
     if (!event) {
       console.error('Usage: agentkits-memory-hook <event>');
-      console.error('Events: context, session-init, observation, summarize');
+      console.error('Events: context, session-init, observation, summarize, user-message, enrich');
       process.exit(1);
+    }
+
+    // Handle 'enrich' command directly (no stdin, runs as background process)
+    if (event === 'enrich') {
+      const obsId = process.argv[3];
+      const cwdArg = process.argv[4] || process.cwd();
+      if (obsId) {
+        const svc = new MemoryHookService(cwdArg);
+        await svc.initialize();
+        await svc.enrichObservation(obsId);
+        await svc.shutdown();
+      }
+      process.exit(0);
     }
 
     // Read stdin
@@ -93,6 +110,10 @@ async function main(): Promise<void> {
 
       case 'summarize':
         result = await createSummarizeHook(input.cwd).execute(input);
+        break;
+
+      case 'user-message':
+        result = await createUserMessageHook(input.cwd).execute(input);
         break;
 
       default:

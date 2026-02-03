@@ -54,6 +54,19 @@ function isEnvEnabled(): boolean | null {
 }
 
 /**
+ * Synchronous check: is AI enrichment potentially enabled?
+ * Used by observation hook to decide whether to spawn background process.
+ * Does NOT check SDK availability (that's async). Just checks env var.
+ */
+export function isAIEnrichmentEnabled(): boolean {
+  const envEnabled = isEnvEnabled();
+  if (envEnabled === false) return false;
+  // If explicitly enabled or auto-detect, optimistically return true.
+  // The background process will handle SDK availability check.
+  return true;
+}
+
+/**
  * Check if Claude Agent SDK is available and cache the result
  */
 async function getQueryFunction(): Promise<QueryFunction | null> {
