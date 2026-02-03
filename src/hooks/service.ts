@@ -304,10 +304,13 @@ export class MemoryHookService {
     const promptNumber = this.getPromptNumber(sessionId);
     const { filesRead, filesModified } = extractFilePaths(toolName, toolInput);
 
-    // Truncate large responses
-    const inputStr = JSON.stringify(toolInput || {});
+    // Truncate large responses (safe stringify handles circular refs)
+    const safeStringify = (val: unknown): string => {
+      try { return JSON.stringify(val || {}); } catch { return '{}'; }
+    };
+    const inputStr = safeStringify(toolInput);
     const responseStr = truncate(
-      JSON.stringify(toolResponse || {}),
+      safeStringify(toolResponse),
       this.config.maxResponseSize
     );
 
@@ -470,8 +473,7 @@ export class MemoryHookService {
     // Write PID placeholder (will be overwritten by worker with its actual PID)
     try {
       writeFileSync(lockFile, '0');
-      closeSync(fd);
-    } catch {
+    } finally {
       try { closeSync(fd); } catch { /* ignore */ }
     }
 
@@ -483,6 +485,7 @@ export class MemoryHookService {
         stdio: 'ignore',
         env: { ...process.env },
       });
+      child.on('error', () => { /* spawn failure handled — lock cleaned below */ });
       child.unref();
     } catch {
       // Failed to spawn — clean up lock
@@ -556,12 +559,13 @@ export class MemoryHookService {
           }
 
           const result = await embService.embed(text);
-          const buffer = Buffer.from(result.embedding.buffer, result.embedding.byteOffset, result.embedding.byteLength);
+          const buffer = Buffer.from(result.embedding);
           this.db!.prepare(`UPDATE ${item.target_table} SET embedding = ? WHERE ${idCol} = ?`).run(buffer, item.target_id);
           this.db!.prepare('DELETE FROM task_queue WHERE id = ?').run(item.id);
           count++;
         } catch {
           this.db!.prepare("UPDATE task_queue SET status = 'pending' WHERE id = ?").run(item.id);
+          count++; // Still count failed attempts to prevent infinite loop on permanently failing tasks
         }
       }
 
@@ -583,7 +587,7 @@ export class MemoryHookService {
               if (!text) continue;
               try {
                 const result = await embService.embed(text);
-                const buffer = Buffer.from(result.embedding.buffer, result.embedding.byteOffset, result.embedding.byteLength);
+                const buffer = Buffer.from(result.embedding);
                 this.db!.prepare(`UPDATE ${tableName} SET embedding = ? WHERE ${idCol} = ?`).run(buffer, row._rid);
                 count++;
               } catch { /* skip */ }
@@ -638,6 +642,7 @@ export class MemoryHookService {
           count++;
         } catch {
           this.db!.prepare("UPDATE task_queue SET status = 'pending' WHERE id = ?").run(item.id);
+          count++; // Still count failed attempts to prevent infinite loop on permanently failing tasks
         }
       }
     } finally {

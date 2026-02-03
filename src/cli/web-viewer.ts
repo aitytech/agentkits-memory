@@ -2329,7 +2329,7 @@ function handleRequest(
           try {
             const embeddingsService = await getEmbeddingsService();
             const result = await embeddingsService.embed(data.content);
-            embeddingBuffer = Buffer.from(result.embedding.buffer);
+            embeddingBuffer = Buffer.from(result.embedding);
           } catch (e) {
             console.warn('[WebViewer] Failed to generate embedding:', e);
           }
@@ -2431,7 +2431,7 @@ function handleRequest(
           try {
             const embeddingsService = await getEmbeddingsService();
             const result = await embeddingsService.embed(data.content);
-            embeddingBuffer = Buffer.from(result.embedding.buffer);
+            embeddingBuffer = Buffer.from(result.embedding);
           } catch (e) {
             console.warn('[WebViewer] Failed to generate embedding:', e);
           }
@@ -2520,7 +2520,7 @@ function handleRequest(
           for (const entry of entries) {
             try {
               const result = await embeddingsService.embed(entry.content);
-              const embeddingBuffer = Buffer.from(result.embedding.buffer);
+              const embeddingBuffer = Buffer.from(result.embedding);
               updateStmt.run(embeddingBuffer, Date.now(), entry.id);
               success++;
             } catch (e) {
@@ -2605,7 +2605,7 @@ function handleRequest(
               if (!text) { totalFailed++; continue; }
               try {
                 const result = await embeddingsService.embed(text);
-                const buffer = Buffer.from(result.embedding.buffer, result.embedding.byteOffset, result.embedding.byteLength);
+                const buffer = Buffer.from(result.embedding);
                 updateStmt.run(buffer, row[idCol]);
                 totalSuccess++;
               } catch { totalFailed++; }
@@ -2758,3 +2758,14 @@ server.listen(PORT, () => {
   console.log(`  Database: ${dbPath}\n`);
   console.log(`  Press Ctrl+C to stop\n`);
 });
+
+// Graceful shutdown: close server, DB, and embeddings service on SIGINT/SIGTERM
+function cleanup() {
+  server.close();
+  if (_db) { try { _db.close(); } catch { /* ignore */ } _db = null; }
+  if (_embeddingsService) { _embeddingsService = null; }
+  if (_searchEngine) { _searchEngine = null; }
+  process.exit(0);
+}
+process.on('SIGINT', cleanup);
+process.on('SIGTERM', cleanup);

@@ -86,6 +86,7 @@ export class SummarizeHook implements EventHandler {
             stdio: 'ignore',
             env: { ...process.env },
           });
+          child.on('error', () => { /* spawn failure — silently ignore */ });
           child.unref();
         } catch {
           // Silently ignore
