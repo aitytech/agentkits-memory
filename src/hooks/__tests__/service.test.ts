@@ -1018,6 +1018,119 @@ describe('MemoryHookService', () => {
     });
   });
 
+  // ===== Embedding Reliability =====
+
+  describe('hasPendingEmbeddings', () => {
+    it('should return false when no pending tasks or missing embeddings', async () => {
+      await service.initialize();
+      expect(service.hasPendingEmbeddings()).toBe(false);
+    });
+
+    it('should return true when pending embed tasks exist', async () => {
+      await service.initSession('session-1', 'test-project');
+      const obs = await service.storeObservation(
+        'session-1', 'test-project', 'Read', { file_path: 'test.ts' }, {}, TEST_DIR
+      );
+      // storeObservation auto-queues embed task
+      expect(service.hasPendingEmbeddings()).toBe(true);
+    });
+
+    it('should return true when observations have null embeddings', async () => {
+      await service.initSession('session-1', 'test-project');
+      await service.storeObservation(
+        'session-1', 'test-project', 'Read', { file_path: 'test.ts' }, {}, TEST_DIR
+      );
+      // Clear task queue but leave embedding null
+      service.db.prepare("DELETE FROM task_queue").run();
+      expect(service.hasPendingEmbeddings()).toBe(true);
+    });
+
+    it('should return false when db not initialized', async () => {
+      // service.db is null before initialize
+      expect(service.hasPendingEmbeddings()).toBe(false);
+    });
+
+    it('should ignore failed tasks at max retries', async () => {
+      await service.initSession('session-1', 'test-project');
+      await service.storeObservation(
+        'session-1', 'test-project', 'Read', { file_path: 'test.ts' }, {}, TEST_DIR
+      );
+      // Set all tasks to failed with max retries
+      service.db.prepare("UPDATE task_queue SET status = 'failed', retry_count = 3").run();
+      // But observations still have null embeddings — should detect via DB scan
+      expect(service.hasPendingEmbeddings()).toBe(true);
+    });
+  });
+
+  describe('hasPendingEnrichments', () => {
+    it('should return false when no pending enrich tasks', async () => {
+      await service.initialize();
+      expect(service.hasPendingEnrichments()).toBe(false);
+    });
+
+    it('should return true when pending enrich tasks exist', async () => {
+      await service.initSession('session-1', 'test-project');
+      const obs = await service.storeObservation(
+        'session-1', 'test-project', 'Read', { file_path: 'test.ts' }, {}, TEST_DIR
+      );
+      // Manually queue an enrich task
+      service.db.prepare(
+        "INSERT INTO task_queue (task_type, target_id, target_table, status, created_at) VALUES ('enrich', ?, 'observations', 'pending', datetime('now'))"
+      ).run(obs.id);
+      expect(service.hasPendingEnrichments()).toBe(true);
+    });
+
+    it('should ignore failed tasks at max retries', async () => {
+      await service.initialize();
+      service.db.prepare(
+        "INSERT INTO task_queue (task_type, target_id, target_table, status, retry_count, created_at) VALUES ('enrich', 'obs-1', 'observations', 'failed', 3, datetime('now'))"
+      ).run();
+      expect(service.hasPendingEnrichments()).toBe(false);
+    });
+
+    it('should return false when db not initialized', () => {
+      expect(service.hasPendingEnrichments()).toBe(false);
+    });
+  });
+
+  describe('hasPendingCompressions', () => {
+    it('should return false when no pending compress tasks', async () => {
+      await service.initialize();
+      expect(service.hasPendingCompressions()).toBe(false);
+    });
+
+    it('should return true when pending compress tasks exist', async () => {
+      await service.initSession('session-1', 'test-project');
+      const obs = await service.storeObservation(
+        'session-1', 'test-project', 'Read', { file_path: 'test.ts' }, {}, TEST_DIR
+      );
+      service.db.prepare(
+        "INSERT INTO task_queue (task_type, target_id, target_table, status, created_at) VALUES ('compress', ?, 'observations', 'pending', datetime('now'))"
+      ).run(obs.id);
+      expect(service.hasPendingCompressions()).toBe(true);
+    });
+
+    it('should return true when pending digest tasks exist', async () => {
+      await service.initSession('session-1', 'test-project');
+      service.db.prepare(
+        "INSERT INTO task_queue (task_type, target_id, target_table, status, created_at) VALUES ('digest', 'session-1', 'sessions', 'pending', datetime('now'))"
+      ).run();
+      expect(service.hasPendingCompressions()).toBe(true);
+    });
+
+    it('should ignore failed tasks at max retries', async () => {
+      await service.initialize();
+      service.db.prepare(
+        "INSERT INTO task_queue (task_type, target_id, target_table, status, retry_count, created_at) VALUES ('compress', 'obs-1', 'observations', 'failed', 3, datetime('now'))"
+      ).run();
+      expect(service.hasPendingCompressions()).toBe(false);
+    });
+
+    it('should return false when db not initialized', () => {
+      expect(service.hasPendingCompressions()).toBe(false);
+    });
+  });
+
   // ===== Persistent Settings =====
 
   describe('loadSettings / saveSettings', () => {

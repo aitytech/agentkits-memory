@@ -105,7 +105,7 @@ async function main(): Promise<void> {
 
     // Handle 'embed-session' command (no stdin, runs as background process)
     // Processes the SQLite embedding queue + any records missing embeddings.
-    // Loads model once, processes sequentially with batch limit. Usage: embed-session <cwd>
+    // Loops until queue is empty (batch limit per iteration). Usage: embed-session <cwd>
     if (event === 'embed-session') {
       const cwdArg = process.argv[3] || process.cwd();
       const svc = new MemoryHookService(cwdArg);
@@ -118,7 +118,11 @@ async function main(): Promise<void> {
       const killTimer = setTimeout(() => { cleanup(); }, 5 * 60 * 1000);
       killTimer.unref();
       try {
-        await svc.processEmbeddingQueue();
+        // Loop until no more work — each call processes up to WORKER_BATCH_LIMIT items
+        let processed: number;
+        do {
+          processed = await svc.processEmbeddingQueue();
+        } while (processed > 0);
       } finally {
         clearTimeout(killTimer);
         await svc.shutdown();
@@ -141,7 +145,11 @@ async function main(): Promise<void> {
       const killTimer = setTimeout(() => { cleanup(); }, 5 * 60 * 1000);
       killTimer.unref();
       try {
-        await svc.processEnrichmentQueue();
+        // Loop until no more work — each call processes up to WORKER_BATCH_LIMIT items
+        let processed: number;
+        do {
+          processed = await svc.processEnrichmentQueue();
+        } while (processed > 0);
       } finally {
         clearTimeout(killTimer);
         await svc.shutdown();
@@ -163,7 +171,11 @@ async function main(): Promise<void> {
       const killTimer = setTimeout(() => { cleanup(); }, 5 * 60 * 1000);
       killTimer.unref();
       try {
-        await svc.processCompressionQueue();
+        // Loop until no more work — each call processes up to WORKER_BATCH_LIMIT items
+        let processed: number;
+        do {
+          processed = await svc.processCompressionQueue();
+        } while (processed > 0);
       } finally {
         clearTimeout(killTimer);
         await svc.shutdown();

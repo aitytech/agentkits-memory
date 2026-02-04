@@ -907,6 +907,52 @@ export class MemoryHookService {
   }
 
   /**
+   * Check if there are pending embedding tasks or records missing embeddings.
+   * Used to decide whether to spawn the embed worker on session start.
+   */
+  hasPendingEmbeddings(): boolean {
+    if (!this.db) return false;
+    // Check task_queue for pending embed tasks
+    const pending = this.db.prepare(
+      "SELECT COUNT(*) as cnt FROM task_queue WHERE task_type = 'embed' AND status = 'pending' AND retry_count < ?"
+    ).get(MemoryHookService.MAX_TASK_RETRIES) as { cnt: number };
+    if (pending.cnt > 0) return true;
+
+    // Check for records missing embeddings (lightweight count, limit 1)
+    for (const table of ['observations', 'user_prompts', 'session_summaries', 'session_digests']) {
+      try {
+        const missing = this.db.prepare(
+          `SELECT 1 FROM ${table} WHERE embedding IS NULL LIMIT 1`
+        ).get();
+        if (missing) return true;
+      } catch { /* table might not exist */ }
+    }
+    return false;
+  }
+
+  /**
+   * Check if there are pending enrichment tasks in the queue
+   */
+  hasPendingEnrichments(): boolean {
+    if (!this.db) return false;
+    const pending = this.db.prepare(
+      "SELECT COUNT(*) as cnt FROM task_queue WHERE task_type = 'enrich' AND status = 'pending' AND retry_count < ?"
+    ).get(MemoryHookService.MAX_TASK_RETRIES) as { cnt: number };
+    return pending.cnt > 0;
+  }
+
+  /**
+   * Check if there are pending compression tasks in the queue
+   */
+  hasPendingCompressions(): boolean {
+    if (!this.db) return false;
+    const pending = this.db.prepare(
+      "SELECT COUNT(*) as cnt FROM task_queue WHERE task_type IN ('compress', 'digest') AND status = 'pending' AND retry_count < ?"
+    ).get(MemoryHookService.MAX_TASK_RETRIES) as { cnt: number };
+    return pending.cnt > 0;
+  }
+
+  /**
    * Get observations for a session
    */
   async getSessionObservations(sessionId: string, limit: number = 50): Promise<Observation[]> {

@@ -47,6 +47,19 @@ export class ContextHook implements EventHandler {
       // Initialize service
       await this.service.initialize();
 
+      // Catch-up: spawn workers if stale pending tasks exist from previous sessions
+      try {
+        if (this.service.hasPendingEmbeddings()) {
+          this.service.ensureWorkerRunning(input.cwd, 'embed-session', 'embed-worker.lock');
+        }
+        if (this.service.hasPendingEnrichments()) {
+          this.service.ensureWorkerRunning(input.cwd, 'enrich-session', 'enrich-worker.lock');
+        }
+        if (this.service.hasPendingCompressions()) {
+          this.service.ensureWorkerRunning(input.cwd, 'compress-session', 'compress-worker.lock');
+        }
+      } catch { /* non-critical — don't block context injection */ }
+
       // Get context for this project
       const context = await this.service.getContext(input.project);
       const hasHistory = context.markdown && !context.markdown.includes('No previous session context');
