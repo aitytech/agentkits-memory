@@ -152,7 +152,18 @@ Tạo và quản lý vector embeddings cho tìm kiếm ngữ nghĩa.
 
 ## Bắt đầu nhanh
 
-### 1. Thiết lập (Được khuyến nghị)
+### Cách 1: Chợ Plugin Claude Code (Khuyến nghị cho Claude Code)
+
+Cài đặt bằng một lệnh duy nhất — không cần cấu hình thủ công:
+
+```bash
+/plugin marketplace add aitytech/agentkits-memory
+/plugin install agentkits-memory@aitytech
+```
+
+Lệnh này tự động cài đặt hooks, MCP server và skill quy trình bộ nhớ. Khởi động lại Claude Code sau khi cài đặt.
+
+### Cách 2: Thiết lập Tự động (Tất cả Nền tảng)
 
 ```bash
 npx agentkits-memory-setup
@@ -168,7 +179,7 @@ npx agentkits-memory-setup --platform=windsurf,cline
 npx agentkits-memory-setup --platform=all
 ```
 
-### 2. Cấu hình MCP Thủ công (Thay thế)
+### Cách 3: Cấu hình MCP Thủ công
 
 Nếu bạn muốn thiết lập thủ công, thêm vào cấu hình MCP của bạn:
 

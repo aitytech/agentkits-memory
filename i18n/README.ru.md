@@ -152,7 +152,18 @@ npx agentkits-memory-web
 
 ## Быстрый старт
 
-### 1. Установка (рекомендуется)
+### Вариант 1: Маркетплейс плагинов Claude Code (рекомендуется для Claude Code)
+
+Установка одной командой — без ручной настройки:
+
+```bash
+/plugin marketplace add aitytech/agentkits-memory
+/plugin install agentkits-memory@aitytech
+```
+
+Это автоматически устанавливает хуки, MCP-сервер и навык рабочего процесса памяти. Перезапустите Claude Code после установки.
+
+### Вариант 2: Автоматическая установка (все платформы)
 
 ```bash
 npx agentkits-memory-setup
@@ -168,7 +179,7 @@ npx agentkits-memory-setup --platform=windsurf,cline
 npx agentkits-memory-setup --platform=all
 ```
 
-### 2. Ручная настройка MCP (альтернатива)
+### Вариант 3: Ручная настройка MCP
 
 Если вы предпочитаете ручную настройку, добавьте в ваш MCP-конфиг:
 

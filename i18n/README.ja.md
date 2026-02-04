@@ -152,7 +152,18 @@ npx agentkits-memory-web
 
 ## クイックスタート
 
-### 1. セットアップ(推奨)
+### オプション1: Claude Codeプラグインマーケットプレイス (Claude Code推奨)
+
+1つのコマンドでインストール — 手動設定不要：
+
+```bash
+/plugin marketplace add aitytech/agentkits-memory
+/plugin install agentkits-memory@aitytech
+```
+
+フック、MCPサーバー、メモリワークフロースキルが自動的にインストールされます。インストール後にClaude Codeを再起動してください。
+
+### オプション2: 自動セットアップ (全プラットフォーム)
 
 ```bash
 npx agentkits-memory-setup
@@ -168,7 +179,7 @@ npx agentkits-memory-setup --platform=windsurf,cline
 npx agentkits-memory-setup --platform=all
 ```
 
-### 2. 手動MCP設定(代替)
+### オプション3: 手動MCP設定
 
 手動セットアップを希望する場合は、MCP設定に追加します:
 

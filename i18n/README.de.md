@@ -152,7 +152,18 @@ Generieren und verwalten Sie Vektor-Embeddings für semantische Suche.
 
 ## Schnellstart
 
-### 1. Setup (Empfohlen)
+### Option 1: Claude Code Plugin-Marketplace (Empfohlen für Claude Code)
+
+Mit einem Befehl installieren — keine manuelle Konfiguration nötig:
+
+```bash
+/plugin marketplace add aitytech/agentkits-memory
+/plugin install agentkits-memory@aitytech
+```
+
+Dies installiert Hooks, MCP-Server und Memory-Workflow-Skill automatisch. Starten Sie Claude Code nach der Installation neu.
+
+### Option 2: Automatisches Setup (Alle Plattformen)
 
 ```bash
 npx agentkits-memory-setup
@@ -168,7 +179,7 @@ npx agentkits-memory-setup --platform=windsurf,cline
 npx agentkits-memory-setup --platform=all
 ```
 
-### 2. Manuelle MCP-Konfiguration (Alternative)
+### Option 3: Manuelle MCP-Konfiguration
 
 Wenn Sie manuelle Einrichtung bevorzugen, fügen Sie zu Ihrer MCP-Konfiguration hinzu:
 

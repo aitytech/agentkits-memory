@@ -152,7 +152,18 @@ Générez et gérez les embeddings vectoriels pour la recherche sémantique.
 
 ## Démarrage Rapide
 
-### 1. Installation (Recommandée)
+### Option 1 : Marketplace de Plugins Claude Code (Recommandé pour Claude Code)
+
+Installation en une seule commande — aucune configuration manuelle nécessaire :
+
+```bash
+/plugin marketplace add aitytech/agentkits-memory
+/plugin install agentkits-memory@aitytech
+```
+
+Cela installe automatiquement les hooks, le serveur MCP et le skill de workflow mémoire. Redémarrez Claude Code après l'installation.
+
+### Option 2 : Installation Automatique (Toutes les Plateformes)
 
 ```bash
 npx agentkits-memory-setup
@@ -168,7 +179,7 @@ npx agentkits-memory-setup --platform=windsurf,cline
 npx agentkits-memory-setup --platform=all
 ```
 
-### 2. Configuration Manuelle MCP (Alternative)
+### Option 3 : Configuration Manuelle MCP
 
 Si vous préférez la configuration manuelle, ajoutez à votre configuration MCP :
 
