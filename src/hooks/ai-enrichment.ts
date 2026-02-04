@@ -20,6 +20,8 @@ export interface EnrichedObservation {
   narrative: string;
   facts: string[];
   concepts: string[];
+  /** Confidence score 0.0-1.0 indicating extraction quality */
+  confidence: number;
 }
 
 /**
@@ -134,7 +136,8 @@ Return ONLY a JSON object (no markdown, no code fences) with these fields:
   "subtitle": "Brief context description (5-10 words, e.g. 'Examining authentication module')",
   "narrative": "One sentence explaining what happened and why (e.g. 'Read the authentication module to understand the login flow before making changes.')",
   "facts": ["Array of factual observations", "e.g. 'File auth.ts contains 150 lines'", "Max 5 facts"],
-  "concepts": ["Array of technical concepts/topics involved", "e.g. 'authentication', 'typescript'", "Include 'intent:<type>' tags for: bugfix, feature, refactor, testing, investigation, documentation, configuration, optimization", "Max 5 concepts"]
+  "concepts": ["Array of technical concepts/topics involved", "e.g. 'authentication', 'typescript'", "Include 'intent:<type>' tags for: bugfix, feature, refactor, testing, investigation, documentation, configuration, optimization", "Include 'fn:<name>' for functions changed, 'class:<name>' for classes, 'pattern:<type>' for patterns used", "Max 8 concepts"],
+  "confidence": 0.85
 }`;
 }
 
@@ -167,11 +170,20 @@ export function parseAIResponse(text: string): EnrichedObservation | null {
       return null;
     }
 
+    // Compute confidence: AI-reported value weighted with heuristic checks
+    let confidence = typeof parsed.confidence === 'number' ? Math.max(0, Math.min(1, parsed.confidence)) : 0.5;
+    // Penalize empty or very short fields
+    if (parsed.subtitle.length < 5) confidence *= 0.7;
+    if (parsed.narrative.length < 10) confidence *= 0.7;
+    if (parsed.facts.length === 0) confidence *= 0.8;
+    confidence = Math.round(confidence * 100) / 100;
+
     return {
       subtitle: parsed.subtitle.substring(0, 200),
       narrative: parsed.narrative.substring(0, 500),
       facts: parsed.facts.slice(0, 5).map((f: unknown) => String(f).substring(0, 200)),
-      concepts: parsed.concepts.slice(0, 5).map((c: unknown) => String(c).substring(0, 50)),
+      concepts: parsed.concepts.slice(0, 8).map((c: unknown) => String(c).substring(0, 50)),
+      confidence,
     };
   } catch {
     return null;

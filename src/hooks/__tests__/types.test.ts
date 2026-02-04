@@ -17,6 +17,7 @@ import {
   extractConcepts,
   extractCodeDiffs,
   formatDiffFact,
+  classifyChangeType,
   detectIntent,
   extractIntents,
   truncate,
@@ -669,6 +670,63 @@ describe('Hook Types Utilities', () => {
       const concepts = extractConcepts('Read', null);
       expect(concepts).toEqual([]);
     });
+
+    it('should extract fn: concepts from Edit tool', () => {
+      const concepts = extractConcepts('Edit', {
+        file_path: 'src/auth.ts',
+        old_string: 'function login(user) {',
+        new_string: 'function login(user, opts) {',
+      });
+      expect(concepts.some(c => c.startsWith('fn:'))).toBe(true);
+      expect(concepts).toContain('fn:login');
+    });
+
+    it('should extract class: concepts from Edit tool', () => {
+      const concepts = extractConcepts('Edit', {
+        file_path: 'src/service.ts',
+        old_string: 'class AuthService {',
+        new_string: 'class AuthService extends BaseService {',
+      });
+      expect(concepts).toContain('class:AuthService');
+    });
+
+    it('should extract pattern: concepts from Edit tool', () => {
+      const concepts = extractConcepts('Edit', {
+        file_path: 'src/types.ts',
+        old_string: 'export interface Foo {',
+        new_string: 'export interface Foo { bar: string; }',
+      });
+      expect(concepts).toContain('pattern:export');
+      expect(concepts).toContain('pattern:interface');
+    });
+
+    it('should extract async pattern concept', () => {
+      const concepts = extractConcepts('Edit', {
+        file_path: 'src/api.ts',
+        old_string: 'async function fetchData() {',
+        new_string: 'async function fetchData(id: string) {',
+      });
+      expect(concepts).toContain('pattern:async');
+      expect(concepts).toContain('fn:fetchData');
+    });
+
+    it('should extract error-handling pattern concept', () => {
+      const concepts = extractConcepts('Edit', {
+        file_path: 'src/handler.ts',
+        old_string: 'return result;',
+        new_string: 'try { return result; } catch (e) { throw e; }',
+      });
+      expect(concepts).toContain('pattern:error-handling');
+    });
+
+    it('should not extract fn/class/pattern from non-Edit tools', () => {
+      const concepts = extractConcepts('Read', {
+        file_path: 'src/auth.ts',
+      });
+      expect(concepts.some(c => c.startsWith('fn:'))).toBe(false);
+      expect(concepts.some(c => c.startsWith('class:'))).toBe(false);
+      expect(concepts.some(c => c.startsWith('pattern:'))).toBe(false);
+    });
   });
 
   describe('detectIntent', () => {
@@ -836,6 +894,67 @@ describe('Hook Types Utilities', () => {
       const diffs = extractCodeDiffs('Edit', { file_path: 'a.ts' });
       expect(diffs).toEqual([]);
     });
+
+    it('should include changeType in extracted diffs', () => {
+      const diffs = extractCodeDiffs('Edit', {
+        file_path: 'a.ts',
+        old_string: 'function foo() {',
+        new_string: 'function foo(arg) {',
+      });
+      expect(diffs[0].changeType).toBe('modification');
+    });
+
+    it('should classify addition when old_string is empty', () => {
+      const diffs = extractCodeDiffs('Edit', {
+        file_path: 'a.ts',
+        old_string: '',
+        new_string: 'const newVar = 1;',
+      });
+      expect(diffs[0].changeType).toBe('addition');
+    });
+
+    it('should classify replacement for different first tokens', () => {
+      const diffs = extractCodeDiffs('Edit', {
+        file_path: 'a.ts',
+        old_string: 'import { a } from "./a"',
+        new_string: 'export { b } from "./b"',
+      });
+      expect(diffs[0].changeType).toBe('replacement');
+    });
+
+    it('should include changeType in MultiEdit diffs', () => {
+      const diffs = extractCodeDiffs('MultiEdit', {
+        file_path: 'a.ts',
+        edits: [
+          { old_string: '', new_string: 'new line' },
+          { old_string: 'const a = 1;', new_string: 'const a = 2;' },
+        ],
+      });
+      expect(diffs[0].changeType).toBe('addition');
+      expect(diffs[1].changeType).toBe('modification');
+    });
+  });
+
+  describe('classifyChangeType', () => {
+    it('should classify addition (empty before, non-empty after)', () => {
+      expect(classifyChangeType('', 'const x = 1;')).toBe('addition');
+      expect(classifyChangeType('   ', 'new code')).toBe('addition');
+    });
+
+    it('should classify deletion (non-empty before, empty after)', () => {
+      expect(classifyChangeType('const x = 1;', '')).toBe('deletion');
+      expect(classifyChangeType('old code', '   ')).toBe('deletion');
+    });
+
+    it('should classify modification (same first token)', () => {
+      expect(classifyChangeType('function login(user) {', 'function login(user, opts) {')).toBe('modification');
+      expect(classifyChangeType('const x = 1;', 'const x = 2;')).toBe('modification');
+    });
+
+    it('should classify replacement (different first token)', () => {
+      expect(classifyChangeType('const x = 1;', 'let y = 2;')).toBe('replacement');
+      expect(classifyChangeType('import { a }', 'export { b }')).toBe('replacement');
+    });
   });
 
   describe('formatDiffFact', () => {
@@ -845,6 +964,7 @@ describe('Hook Types Utilities', () => {
         before: 'function login(user) {',
         after: 'function login(user, opts) {',
         changeLines: 0,
+        changeType: 'modification',
       });
       expect(fact).toContain('DIFF');
       expect(fact).toContain('auth.ts');
@@ -858,6 +978,7 @@ describe('Hook Types Utilities', () => {
         before: 'old',
         after: 'new',
         changeLines: 0,
+        changeType: 'modification',
       });
       expect(fact).toContain('file.ts');
       expect(fact).not.toContain('/very/long');
@@ -870,9 +991,55 @@ describe('Hook Types Utilities', () => {
         before: longLine,
         after: 'short',
         changeLines: 0,
+        changeType: 'modification',
       });
       // First line is truncated to 60 chars
       expect(fact.length).toBeLessThan(200);
+    });
+
+    it('should show [addition] tag for addition changeType', () => {
+      const fact = formatDiffFact({
+        file: 'a.ts',
+        before: '',
+        after: 'new code',
+        changeLines: 1,
+        changeType: 'addition',
+      });
+      expect(fact).toContain('[addition]');
+    });
+
+    it('should show [deletion] tag for deletion changeType', () => {
+      const fact = formatDiffFact({
+        file: 'a.ts',
+        before: 'old code',
+        after: '',
+        changeLines: -1,
+        changeType: 'deletion',
+      });
+      expect(fact).toContain('[deletion]');
+    });
+
+    it('should show [replacement] tag for replacement changeType', () => {
+      const fact = formatDiffFact({
+        file: 'a.ts',
+        before: 'const x = 1;',
+        after: 'let y = 2;',
+        changeLines: 0,
+        changeType: 'replacement',
+      });
+      expect(fact).toContain('[replacement]');
+    });
+
+    it('should not show tag for modification changeType', () => {
+      const fact = formatDiffFact({
+        file: 'a.ts',
+        before: 'const x = 1;',
+        after: 'const x = 2;',
+        changeLines: 0,
+        changeType: 'modification',
+      });
+      expect(fact).not.toContain('[modification]');
+      expect(fact).not.toContain('[');
     });
   });
 });

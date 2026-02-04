@@ -1261,6 +1261,193 @@ describe('MemoryHookService', () => {
     });
   });
 
+  describe('errors in structured summaries', () => {
+    it('should extract errors from Bash stderr/stdout', async () => {
+      await service.initialize();
+      await service.initSession('error-session', 'test-project');
+
+      await service.storeObservation(
+        'error-session', 'test-project', 'Bash',
+        { command: 'npm run build' },
+        { stderr: 'Error: TS2304 Cannot find name "foo"', stdout: '' },
+        TEST_DIR
+      );
+
+      const summary = await service.generateStructuredSummary('error-session');
+      expect(summary.errors).toBeDefined();
+      expect(summary.errors.length).toBeGreaterThan(0);
+      expect(summary.errors[0]).toContain('TS2304');
+    });
+
+    it('should not include false positive errors like "0 errors"', async () => {
+      await service.initialize();
+      await service.initSession('no-error-session', 'test-project');
+
+      await service.storeObservation(
+        'no-error-session', 'test-project', 'Bash',
+        { command: 'tsc' },
+        { stdout: 'Build completed with 0 errors', stderr: '' },
+        TEST_DIR
+      );
+
+      const summary = await service.generateStructuredSummary('no-error-session');
+      expect(summary.errors.length).toBe(0);
+    });
+
+    it('should return empty errors when no Bash observations', async () => {
+      await service.initialize();
+      await service.initSession('read-only-session', 'test-project');
+
+      await service.storeObservation(
+        'read-only-session', 'test-project', 'Read',
+        { file_path: 'file.ts' }, {}, TEST_DIR
+      );
+
+      const summary = await service.generateStructuredSummary('read-only-session');
+      expect(summary.errors).toEqual([]);
+    });
+
+    it('should cap errors at 10', async () => {
+      await service.initialize();
+      await service.initSession('many-error-session', 'test-project');
+
+      // Create output with many error lines
+      const errorLines = Array.from({ length: 20 }, (_, i) => `Error: issue ${i}`).join('\n');
+      await service.storeObservation(
+        'many-error-session', 'test-project', 'Bash',
+        { command: 'build' },
+        { stdout: errorLines, stderr: '' },
+        TEST_DIR
+      );
+
+      const summary = await service.generateStructuredSummary('many-error-session');
+      expect(summary.errors.length).toBeLessThanOrEqual(10);
+    });
+
+    it('should include errors in saved session summary', async () => {
+      await service.initialize();
+      await service.initSession('saved-error', 'test-project');
+
+      await service.storeObservation(
+        'saved-error', 'test-project', 'Bash',
+        { command: 'tsc' },
+        { stderr: 'fatal error: out of memory' },
+        TEST_DIR
+      );
+
+      const structured = await service.generateStructuredSummary('saved-error');
+      const saved = await service.saveSessionSummary(structured);
+      expect(saved.errors.length).toBeGreaterThan(0);
+
+      // Verify roundtrip through DB
+      const summaries = await service.getRecentSummaries('test-project');
+      const found = summaries.find(s => s.sessionId === 'saved-error');
+      expect(found).toBeDefined();
+      expect(found!.errors.length).toBeGreaterThan(0);
+    });
+
+    it('should show errors in context markdown', async () => {
+      await service.initialize();
+      await service.initSession('ctx-error', 'test-project');
+
+      await service.storeObservation(
+        'ctx-error', 'test-project', 'Bash',
+        { command: 'npm test' },
+        { stderr: 'Error: Test failed unexpectedly' },
+        TEST_DIR
+      );
+
+      const structured = await service.generateStructuredSummary('ctx-error');
+      await service.saveSessionSummary(structured);
+      await service.completeSession('ctx-error', 'Done');
+
+      const ctx = await service.getContext('test-project');
+      expect(ctx.markdown).toContain('Errors');
+    });
+  });
+
+  describe('cross-session pattern detection', () => {
+    it('should detect recurring concepts across observations', async () => {
+      await service.initialize();
+
+      // Create multiple sessions with overlapping concepts
+      await service.initSession('pattern-s1', 'test-project');
+      await service.storeObservation(
+        'pattern-s1', 'test-project', 'Edit',
+        { file_path: 'src/auth.ts', old_string: 'function login(user) {', new_string: 'function login(user, opts) {' },
+        {}, TEST_DIR
+      );
+
+      await service.initSession('pattern-s2', 'test-project');
+      await service.storeObservation(
+        'pattern-s2', 'test-project', 'Edit',
+        { file_path: 'src/auth.ts', old_string: 'function logout() {', new_string: 'function logout(session) {' },
+        {}, TEST_DIR
+      );
+
+      const patterns = await service.detectCrossSessionPatterns('test-project');
+
+      // Both edits touched 'authentication' concept from auth.ts path
+      expect(patterns.length).toBeGreaterThan(0);
+      // At least some patterns should appear with count >= 2
+      expect(patterns.every(p => p.count >= 2)).toBe(true);
+      expect(patterns.every(p => p.category)).toBe(true);
+    });
+
+    it('should categorize patterns by prefix', async () => {
+      await service.initialize();
+
+      // Create observations with fn: and intent: concepts
+      await service.initSession('cat-s1', 'test-project');
+      await service.saveUserPrompt('cat-s1', 'test-project', 'Fix the login bug');
+      await service.storeObservation(
+        'cat-s1', 'test-project', 'Edit',
+        { file_path: 'src/app.ts', old_string: 'function handleAuth() {', new_string: 'function handleAuth(opts) {' },
+        {}, TEST_DIR
+      );
+
+      await service.initSession('cat-s2', 'test-project');
+      await service.saveUserPrompt('cat-s2', 'test-project', 'Fix the signup bug');
+      await service.storeObservation(
+        'cat-s2', 'test-project', 'Edit',
+        { file_path: 'src/signup.ts', old_string: 'function handleAuth() {', new_string: 'function handleAuth(token) {' },
+        {}, TEST_DIR
+      );
+
+      const patterns = await service.detectCrossSessionPatterns('test-project');
+
+      // Check category values
+      const categories = new Set(patterns.map(p => p.category));
+      // Should have valid categories
+      for (const cat of categories) {
+        expect(['topic', 'intent', 'function', 'class', 'code-pattern']).toContain(cat);
+      }
+    });
+
+    it('should return empty for project with no observations', async () => {
+      await service.initialize();
+      const patterns = await service.detectCrossSessionPatterns('empty-project');
+      expect(patterns).toEqual([]);
+    });
+
+    it('should respect limit parameter', async () => {
+      await service.initialize();
+      await service.initSession('limit-s1', 'test-project');
+
+      // Create many observations to generate many concepts
+      for (let i = 0; i < 5; i++) {
+        await service.storeObservation(
+          'limit-s1', 'test-project', 'Edit',
+          { file_path: `src/file${i}.ts`, old_string: 'const a = 1;', new_string: 'const a = 2;' },
+          {}, TEST_DIR
+        );
+      }
+
+      const patterns = await service.detectCrossSessionPatterns('test-project', 3);
+      expect(patterns.length).toBeLessThanOrEqual(3);
+    });
+  });
+
   describe('export/import', () => {
     it('should export sessions with observations and prompts', async () => {
       await service.initialize();
@@ -1334,6 +1521,28 @@ describe('MemoryHookService', () => {
       expect(result2.imported.sessions).toBe(1);
       // Both skip observations since content_hash already in DB
       expect(result1.skipped.observations + result2.skipped.observations).toBeGreaterThanOrEqual(1);
+    });
+
+    it('should preserve errors in export/import roundtrip', async () => {
+      await service.initialize();
+      await service.initSession('err-export', 'test-project');
+
+      await service.storeObservation(
+        'err-export', 'test-project', 'Bash',
+        { command: 'build' },
+        { stderr: 'Error: compilation failed' },
+        TEST_DIR
+      );
+
+      const structured = await service.generateStructuredSummary('err-export');
+      await service.saveSessionSummary(structured);
+      await service.completeSession('err-export', 'Done');
+
+      const exported = await service.exportToJSON('test-project', ['err-export']);
+      const session = exported.sessions.find(s => s.sessionId === 'err-export');
+      expect(session).toBeDefined();
+      expect(session!.summary).toBeDefined();
+      expect(session!.summary!.errors.length).toBeGreaterThan(0);
     });
   });
 });

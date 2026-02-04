@@ -338,6 +338,11 @@ export function extractIntents(concepts: string[]): ObservationIntent[] {
  * Structured code diff from Edit/MultiEdit operations.
  * Captures before/after snippets for understanding what changed.
  */
+/**
+ * Change type classification for code diffs
+ */
+export type DiffChangeType = 'addition' | 'deletion' | 'modification' | 'replacement';
+
 export interface CodeDiff {
   /** File path that was edited */
   file: string;
@@ -347,6 +352,21 @@ export interface CodeDiff {
   after: string;
   /** Net line count change (positive=added, negative=removed) */
   changeLines: number;
+  /** Classified change type */
+  changeType: DiffChangeType;
+}
+
+/**
+ * Classify the type of change in a diff
+ */
+export function classifyChangeType(before: string, after: string): DiffChangeType {
+  if (!before.trim() && after.trim()) return 'addition';
+  if (before.trim() && !after.trim()) return 'deletion';
+  // If structure is similar (same first token), it's a modification; otherwise replacement
+  const beforeFirst = before.trim().split(/[\s({\[]/)[0];
+  const afterFirst = after.trim().split(/[\s({\[]/)[0];
+  if (beforeFirst === afterFirst) return 'modification';
+  return 'replacement';
 }
 
 /**
@@ -371,6 +391,7 @@ export function extractCodeDiffs(toolName: string, toolInput: unknown): CodeDiff
           before: oldStr.substring(0, 200),
           after: newStr.substring(0, 200),
           changeLines: newStr.split('\n').length - oldStr.split('\n').length,
+          changeType: classifyChangeType(oldStr, newStr),
         });
       }
     } else if (toolName === 'MultiEdit') {
@@ -384,6 +405,7 @@ export function extractCodeDiffs(toolName: string, toolInput: unknown): CodeDiff
             before: oldStr.substring(0, 200),
             after: newStr.substring(0, 200),
             changeLines: newStr.split('\n').length - oldStr.split('\n').length,
+            changeType: classifyChangeType(oldStr, newStr),
           });
         }
       }
@@ -403,7 +425,8 @@ export function formatDiffFact(diff: CodeDiff): string {
   const fileName = diff.file.split(/[/\\]/).pop() || diff.file;
   const beforeLine = diff.before.split('\n')[0].trim().substring(0, 60);
   const afterLine = diff.after.split('\n')[0].trim().substring(0, 60);
-  return `DIFF ${fileName}: "${beforeLine}" → "${afterLine}"`;
+  const tag = diff.changeType !== 'modification' ? ` [${diff.changeType}]` : '';
+  return `DIFF ${fileName}${tag}: "${beforeLine}" → "${afterLine}"`;
 }
 
 /**
@@ -497,6 +520,9 @@ export interface SessionSummary {
 
   /** Decision rationale — why key changes were made */
   decisions: string[];
+
+  /** Errors encountered during session */
+  errors: string[];
 
   /** Which prompt triggered this summary */
   promptNumber: number;
@@ -600,6 +626,7 @@ export interface ExportSummary {
   nextSteps: string;
   notes: string;
   decisions: string[];
+  errors: string[];
 }
 
 /**
@@ -1007,6 +1034,38 @@ export function extractConcepts(toolName: string, toolInput: unknown, _toolRespo
         };
         if (dirMap[part]) concepts.add(dirMap[part]);
       }
+    }
+
+    // Extract function/class names from Edit/MultiEdit for code-specific searchability
+    if (toolName === 'Edit' || toolName === 'MultiEdit') {
+      const oldStr = (input?.old_string || '') as string;
+      const newStr = (input?.new_string || '') as string;
+      const combined = oldStr + '\n' + newStr;
+
+      // Extract function names
+      const funcMatches = combined.match(/(?:function|async function|const|let|var)\s+(\w{3,})/g);
+      if (funcMatches) {
+        for (const m of funcMatches.slice(0, 3)) {
+          const name = m.replace(/(?:function|async function|const|let|var)\s+/, '');
+          concepts.add(`fn:${name}`);
+        }
+      }
+
+      // Extract class names
+      const classMatches = combined.match(/class\s+(\w{3,})/g);
+      if (classMatches) {
+        for (const m of classMatches.slice(0, 2)) {
+          concepts.add(`class:${m.replace('class ', '')}`);
+        }
+      }
+
+      // Extract patterns: import, export, interface, type, enum
+      if (/\bimport\b/.test(combined)) concepts.add('pattern:import');
+      if (/\bexport\b/.test(combined)) concepts.add('pattern:export');
+      if (/\binterface\b/.test(combined)) concepts.add('pattern:interface');
+      if (/\benum\b/.test(combined)) concepts.add('pattern:enum');
+      if (/\btry\s*\{/.test(combined)) concepts.add('pattern:error-handling');
+      if (/\basync\b/.test(combined)) concepts.add('pattern:async');
     }
 
     // Tool-based concepts

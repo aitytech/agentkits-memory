@@ -997,6 +997,9 @@ export class MemoryHookService {
         if (summary.decisions && summary.decisions.length > 0) {
           lines.push(`**Decisions:** ${summary.decisions.slice(0, 5).join('; ')}`);
         }
+        if (summary.errors && summary.errors.length > 0) {
+          lines.push(`**Errors:** ${summary.errors.slice(0, 3).join('; ')}`);
+        }
         if (summary.nextSteps) {
           lines.push(`**Next Steps:** ${summary.nextSteps}`);
         }
@@ -1142,11 +1145,12 @@ export class MemoryHookService {
     const prompts = await this.getSessionPrompts(sessionId);
     const session = this.getSession(sessionId);
 
-    // Extract file paths, commands, and decisions from observations
+    // Extract file paths, commands, decisions, and errors from observations
     const filesRead: Set<string> = new Set();
     const filesModified: Set<string> = new Set();
     const commands: string[] = [];
     const decisions: string[] = [];
+    const errors: string[] = [];
 
     for (const obs of observations) {
       try {
@@ -1175,6 +1179,28 @@ export class MemoryHookService {
           }
         } else if (obs.type === 'execute' && input.command) {
           commands.push(input.command.substring(0, 80));
+
+          // Extract errors from Bash output
+          try {
+            const response = JSON.parse(obs.toolResponse);
+            const stderr = (response?.stderr || '') as string;
+            const stdout = (response?.stdout || response?.output || '') as string;
+            const output = stderr + '\n' + stdout;
+
+            // Detect error patterns
+            const errorLines = output.split('\n').filter((line: string) => {
+              const l = line.toLowerCase();
+              return (l.includes('error') || l.includes('failed') || l.includes('exception') || l.includes('fatal'))
+                && !l.includes('0 errors') && !l.includes('no errors') && line.trim().length > 5;
+            });
+
+            for (const errLine of errorLines.slice(0, 3)) {
+              const trimmed = errLine.trim().substring(0, 150);
+              if (trimmed && !errors.includes(trimmed)) {
+                errors.push(trimmed);
+              }
+            }
+          } catch { /* ignore response parse errors */ }
         }
       } catch {
         // Ignore parse errors
@@ -1212,6 +1238,7 @@ export class MemoryHookService {
       nextSteps: '',
       notes,
       decisions: decisions.slice(0, 10),
+      errors: errors.slice(0, 10),
       promptNumber: prompts.length,
     };
   }
@@ -1227,8 +1254,8 @@ export class MemoryHookService {
     const now = Date.now();
     const result = this.db!.prepare(`
       INSERT INTO session_summaries
-      (session_id, project, request, completed, files_read, files_modified, next_steps, notes, decisions, prompt_number, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      (session_id, project, request, completed, files_read, files_modified, next_steps, notes, decisions, errors, prompt_number, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       summary.sessionId,
       summary.project,
@@ -1239,6 +1266,7 @@ export class MemoryHookService {
       summary.nextSteps,
       summary.notes,
       JSON.stringify(summary.decisions || []),
+      JSON.stringify(summary.errors || []),
       summary.promptNumber,
       now
     );
@@ -1334,6 +1362,7 @@ export class MemoryHookService {
       nextSteps: row.next_steps as string || '',
       notes: row.notes as string || '',
       decisions: JSON.parse((row.decisions as string) || '[]'),
+      errors: JSON.parse((row.errors as string) || '[]'),
       promptNumber: row.prompt_number as number || 0,
       createdAt: row.created_at as number,
     };
@@ -1456,6 +1485,52 @@ export class MemoryHookService {
     };
   }
 
+  // ===== Cross-Session Pattern Detection =====
+
+  /**
+   * Detect recurring patterns across sessions for a project.
+   * Analyzes concept frequency across recent observations to identify
+   * common workflows, frequently modified files, and recurring intents.
+   * Returns top patterns sorted by frequency.
+   */
+  async detectCrossSessionPatterns(project: string, limit: number = 10): Promise<Array<{ pattern: string; count: number; category: string }>> {
+    await this.ensureInitialized();
+
+    // Get concepts from recent observations (last 30 days)
+    const cutoff = Date.now() - 30 * 86400000;
+    const rows = this.db!.prepare(`
+      SELECT concepts FROM observations
+      WHERE project = ? AND timestamp > ? AND concepts IS NOT NULL
+    `).all(project, cutoff) as { concepts: string }[];
+
+    // Count concept frequency
+    const conceptCounts = new Map<string, number>();
+    for (const row of rows) {
+      try {
+        const concepts = JSON.parse(row.concepts) as string[];
+        for (const concept of concepts) {
+          conceptCounts.set(concept, (conceptCounts.get(concept) || 0) + 1);
+        }
+      } catch { /* ignore */ }
+    }
+
+    // Categorize and sort
+    const patterns = Array.from(conceptCounts.entries())
+      .filter(([, count]) => count >= 2) // Only patterns that appear at least twice
+      .map(([pattern, count]) => {
+        let category = 'topic';
+        if (pattern.startsWith('intent:')) category = 'intent';
+        else if (pattern.startsWith('fn:')) category = 'function';
+        else if (pattern.startsWith('class:')) category = 'class';
+        else if (pattern.startsWith('pattern:')) category = 'code-pattern';
+        return { pattern, count, category };
+      })
+      .sort((a, b) => b.count - a.count)
+      .slice(0, limit);
+
+    return patterns;
+  }
+
   // ===== Export/Import =====
 
   /**
@@ -1529,6 +1604,7 @@ export class MemoryHookService {
           nextSteps: summary.next_steps as string,
           notes: summary.notes as string,
           decisions: JSON.parse((summary.decisions as string) || '[]'),
+          errors: JSON.parse((summary.errors as string) || '[]'),
         } : undefined,
       });
     }
@@ -1628,12 +1704,13 @@ export class MemoryHookService {
         if (session.summary) {
           const s = session.summary;
           this.db!.prepare(`
-            INSERT INTO session_summaries (session_id, project, request, completed, files_read, files_modified, next_steps, notes, decisions, prompt_number, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO session_summaries (session_id, project, request, completed, files_read, files_modified, next_steps, notes, decisions, errors, prompt_number, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           `).run(
             newSessionId, session.project, s.request, s.completed,
             JSON.stringify(s.filesRead || []), JSON.stringify(s.filesModified || []),
             s.nextSteps || '', s.notes || '', JSON.stringify(s.decisions || []),
+            JSON.stringify(s.errors || []),
             session.prompts.length, Date.now()
           );
         }
@@ -1729,6 +1806,7 @@ export class MemoryHookService {
         next_steps TEXT,
         notes TEXT,
         decisions TEXT DEFAULT '[]',
+        errors TEXT DEFAULT '[]',
         prompt_number INTEGER,
         created_at INTEGER NOT NULL,
         embedding BLOB,
@@ -1826,11 +1904,14 @@ export class MemoryHookService {
         }
       } catch { /* ignore */ }
 
-      // Migrate session_summaries: add decisions column
+      // Migrate session_summaries: add decisions + errors columns
       try {
         const summaryCols = this.db.prepare("PRAGMA table_info(session_summaries)").all() as Array<{ name: string }>;
         if (!summaryCols.some(c => c.name === 'decisions')) {
           this.db.exec("ALTER TABLE session_summaries ADD COLUMN decisions TEXT DEFAULT '[]'");
+        }
+        if (!summaryCols.some(c => c.name === 'errors')) {
+          this.db.exec("ALTER TABLE session_summaries ADD COLUMN errors TEXT DEFAULT '[]'");
         }
       } catch { /* ignore */ }
 

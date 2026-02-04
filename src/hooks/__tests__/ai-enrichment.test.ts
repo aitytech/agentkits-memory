@@ -316,16 +316,81 @@ describe('AI Enrichment Module', () => {
       expect(result!.facts.length).toBe(5);
     });
 
-    it('should limit concepts to 5 items', () => {
+    it('should limit concepts to 8 items', () => {
       const json = JSON.stringify({
         subtitle: 'Test',
         narrative: 'Test.',
         facts: [],
-        concepts: ['c1', 'c2', 'c3', 'c4', 'c5', 'c6', 'c7'],
+        concepts: ['c1', 'c2', 'c3', 'c4', 'c5', 'c6', 'c7', 'c8', 'c9', 'c10'],
       });
       const result = parseAIResponse(json);
       expect(result).not.toBeNull();
-      expect(result!.concepts.length).toBe(5);
+      expect(result!.concepts.length).toBe(8);
+    });
+
+    it('should compute confidence score from AI-reported value', () => {
+      const json = JSON.stringify({
+        subtitle: 'Examining auth module',
+        narrative: 'Read the auth module for login flow.',
+        facts: ['File has 200 lines'],
+        concepts: ['authentication'],
+        confidence: 0.92,
+      });
+      const result = parseAIResponse(json);
+      expect(result).not.toBeNull();
+      expect(result!.confidence).toBeCloseTo(0.92, 1);
+    });
+
+    it('should default confidence to 0.5 when not provided', () => {
+      const json = JSON.stringify({
+        subtitle: 'Examining auth module',
+        narrative: 'Read the auth module for login flow.',
+        facts: ['Fact 1'],
+        concepts: ['auth'],
+      });
+      const result = parseAIResponse(json);
+      expect(result).not.toBeNull();
+      expect(result!.confidence).toBeCloseTo(0.5, 1);
+    });
+
+    it('should penalize confidence for very short subtitle', () => {
+      const json = JSON.stringify({
+        subtitle: 'Hi',
+        narrative: 'Read the auth module for login flow.',
+        facts: ['Fact 1'],
+        concepts: ['auth'],
+        confidence: 0.9,
+      });
+      const result = parseAIResponse(json);
+      expect(result).not.toBeNull();
+      expect(result!.confidence).toBeLessThan(0.9);
+    });
+
+    it('should penalize confidence for empty facts', () => {
+      const json = JSON.stringify({
+        subtitle: 'Examining auth module',
+        narrative: 'Read the auth module for login flow.',
+        facts: [],
+        concepts: ['auth'],
+        confidence: 0.9,
+      });
+      const result = parseAIResponse(json);
+      expect(result).not.toBeNull();
+      expect(result!.confidence).toBeLessThan(0.9);
+    });
+
+    it('should clamp confidence to 0-1 range', () => {
+      const json = JSON.stringify({
+        subtitle: 'Examining auth module',
+        narrative: 'Read the auth module for login flow.',
+        facts: ['Fact'],
+        concepts: ['auth'],
+        confidence: 1.5,
+      });
+      const result = parseAIResponse(json);
+      expect(result).not.toBeNull();
+      expect(result!.confidence).toBeLessThanOrEqual(1);
+      expect(result!.confidence).toBeGreaterThanOrEqual(0);
     });
 
     it('should truncate individual fact strings to 200 chars', () => {
