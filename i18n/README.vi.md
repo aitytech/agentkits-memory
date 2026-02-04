@@ -161,7 +161,7 @@ Cài đặt bằng một lệnh duy nhất — không cần cấu hình thủ c�
 
 ```bash
 /plugin marketplace add aitytech/agentkits-memory
-/plugin install agentkits-memory@aitytech
+/plugin install agentkits-memory@agentkits-memory
 ```
 
 Lệnh này tự động cài đặt hooks, MCP server và skill quy trình bộ nhớ. Khởi động lại Claude Code sau khi cài đặt.

@@ -161,7 +161,7 @@ npx agentkits-memory-web
 
 ```bash
 /plugin marketplace add aitytech/agentkits-memory
-/plugin install agentkits-memory@aitytech
+/plugin install agentkits-memory@agentkits-memory
 ```
 
 フック、MCPサーバー、メモリワークフロースキルが自動的にインストールされます。インストール後にClaude Codeを再起動してください。

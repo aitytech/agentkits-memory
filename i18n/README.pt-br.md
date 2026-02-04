@@ -161,7 +161,7 @@ Instale com um único comando — sem configuração manual:
 
 ```bash
 /plugin marketplace add aitytech/agentkits-memory
-/plugin install agentkits-memory@aitytech
+/plugin install agentkits-memory@agentkits-memory
 ```
 
 Isso instala hooks, servidor MCP e skill de workflow de memória automaticamente. Reinicie o Claude Code após a instalação.

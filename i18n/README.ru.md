@@ -161,7 +161,7 @@ npx agentkits-memory-web
 
 ```bash
 /plugin marketplace add aitytech/agentkits-memory
-/plugin install agentkits-memory@aitytech
+/plugin install agentkits-memory@agentkits-memory
 ```
 
 Это автоматически устанавливает хуки, MCP-сервер и навык рабочего процесса памяти. Перезапустите Claude Code после установки.

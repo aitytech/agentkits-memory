@@ -161,7 +161,7 @@ npx agentkits-memory-web
 
 ```bash
 /plugin marketplace add aitytech/agentkits-memory
-/plugin install agentkits-memory@aitytech
+/plugin install agentkits-memory@agentkits-memory
 ```
 
 훅, MCP 서버, 메모리 워크플로 스킬이 자동으로 설치됩니다. 설치 후 Claude Code를 재시작하세요.

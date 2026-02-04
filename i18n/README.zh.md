@@ -161,7 +161,7 @@ npx agentkits-memory-web
 
 ```bash
 /plugin marketplace add aitytech/agentkits-memory
-/plugin install agentkits-memory@aitytech
+/plugin install agentkits-memory@agentkits-memory
 ```
 
 这会自动安装钩子、MCP 服务器和记忆工作流技能。安装后请重启 Claude Code。

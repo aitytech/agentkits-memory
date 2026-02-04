@@ -161,7 +161,7 @@ npx agentkits-memory-web
 
 ```bash
 /plugin marketplace add aitytech/agentkits-memory
-/plugin install agentkits-memory@aitytech
+/plugin install agentkits-memory@agentkits-memory
 ```
 
 هذا يُثبّت الخطافات وخادم MCP ومهارة سير عمل الذاكرة تلقائيًا. أعد تشغيل Claude Code بعد التثبيت.
