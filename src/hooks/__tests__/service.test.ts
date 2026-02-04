@@ -1213,6 +1213,40 @@ describe('MemoryHookService', () => {
       const loaded = service.loadSettings();
       expect(loaded).toEqual(original);
     });
+
+    it('should save and load aiProvider settings', async () => {
+      await service.initialize();
+      const settings = {
+        context: {
+          showSummaries: true,
+          showPrompts: true,
+          showObservations: true,
+          showToolGuidance: true,
+          maxSummaries: 3,
+          maxPrompts: 10,
+          maxObservations: 10,
+        },
+        aiProvider: {
+          provider: 'openai' as const,
+          apiKey: 'sk-test-key',
+          baseUrl: 'https://openrouter.ai/api/v1',
+          model: 'anthropic/claude-3.5-haiku',
+        },
+      };
+      service.saveSettings(settings);
+      const loaded = service.loadSettings();
+      expect(loaded.aiProvider).toBeDefined();
+      expect(loaded.aiProvider!.provider).toBe('openai');
+      expect(loaded.aiProvider!.apiKey).toBe('sk-test-key');
+      expect(loaded.aiProvider!.baseUrl).toBe('https://openrouter.ai/api/v1');
+      expect(loaded.aiProvider!.model).toBe('anthropic/claude-3.5-haiku');
+    });
+
+    it('should return undefined aiProvider when not set in settings', async () => {
+      await service.initialize();
+      const loaded = service.loadSettings();
+      expect(loaded.aiProvider).toBeUndefined();
+    });
   });
 
   describe('getContext with settings', () => {

@@ -725,6 +725,8 @@ export const DEFAULT_CONTEXT_CONFIG: ContextConfig = {
 export interface MemorySettings {
   /** Context injection configuration */
   context: ContextConfig;
+  /** AI provider configuration (for enrichment/compression) */
+  aiProvider?: import('./ai-provider.js').AIProviderConfig;
 }
 
 /** Default memory settings */

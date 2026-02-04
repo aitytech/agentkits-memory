@@ -1,16 +1,15 @@
 /**
  * AI Enrichment for Observations and Session Summaries
  *
- * Uses `claude --print` CLI to generate richer subtitle, narrative,
- * facts, and concepts from tool observations, and to enhance session
- * summaries using transcript data. This avoids the Claude Agent SDK's
- * `query()` which creates visible sub-conversations in the Claude Code UI.
- * Falls back to template-based extraction when `claude` CLI is not available.
+ * Uses pluggable AI providers (Claude CLI, OpenAI-compatible, Gemini) to
+ * generate richer subtitle, narrative, facts, and concepts from tool
+ * observations, and to enhance session summaries using transcript data.
+ * Falls back to template-based extraction when the provider is not available.
  *
  * @module @agentkits/memory/hooks/ai-enrichment
  */
 
-import { execFileSync } from 'node:child_process';
+import { resolveAIProvider, type AIProviderConfig, type ResolvedProvider } from './ai-provider.js';
 
 /**
  * Enriched observation data from AI extraction
@@ -27,21 +26,43 @@ export interface EnrichedObservation {
 /**
  * Environment variable to enable/disable AI enrichment.
  * Set AGENTKITS_AI_ENRICHMENT=true to enable, false to disable.
- * When not set, defaults to auto-detect (uses AI if CLI available).
+ * When not set, defaults to auto-detect (uses AI if provider available).
  */
 const AI_ENRICHMENT_ENV_KEY = 'AGENTKITS_AI_ENRICHMENT';
 
-/** Cached CLI availability */
-let _cliAvailable: boolean | null = null;
+/** Resolved provider (cached at module level, lazy-initialized) */
+let _resolvedProvider: ResolvedProvider | null = null;
 
-/** Mock function for testing (replaces runClaudePrint when set) */
+/** Provider config from settings.json (set by service.ts) */
+let _providerConfig: AIProviderConfig | undefined;
+
+/** Mock function for testing (replaces provider.run when set) */
 let _mockRunClaudePrint: ((prompt: string, systemPrompt: string, timeoutMs: number) => string | null) | null = null;
+
+/**
+ * Set AI provider config from settings.json.
+ * Called by service.ts after loading settings. Forces re-resolution on next use.
+ */
+export function setAIProviderConfig(config?: AIProviderConfig): void {
+  _providerConfig = config;
+  _resolvedProvider = null; // force re-resolution
+}
+
+/**
+ * Get the resolved AI provider (lazy-initialized, cached).
+ */
+function getProvider(): ResolvedProvider {
+  if (!_resolvedProvider) {
+    _resolvedProvider = resolveAIProvider(_providerConfig);
+  }
+  return _resolvedProvider;
+}
 
 /**
  * Check if AI enrichment is enabled via environment variable
  * - 'true' / '1' → force enable
  * - 'false' / '0' → force disable
- * - not set → auto-detect (try CLI, fallback to template)
+ * - not set → auto-detect (try provider, fallback to template)
  */
 function isEnvEnabled(): boolean | null {
   const value = process.env[AI_ENRICHMENT_ENV_KEY];
@@ -50,71 +71,41 @@ function isEnvEnabled(): boolean | null {
 }
 
 /**
+ * Check if the current AI provider is available.
+ * Respects AGENTKITS_AI_ENRICHMENT env var override.
+ */
+function isProviderAvailable(): boolean {
+  const envEnabled = isEnvEnabled();
+  if (envEnabled === false) return false;
+
+  // When mock is set, provider is "available"
+  if (_mockRunClaudePrint) return true;
+
+  return getProvider().isAvailable();
+}
+
+/**
+ * Run a prompt through the current AI provider.
+ * Uses mock if set (testing), otherwise delegates to the resolved provider.
+ */
+async function runProvider(prompt: string, systemPrompt: string, timeoutMs: number): Promise<string | null> {
+  if (_mockRunClaudePrint) {
+    return _mockRunClaudePrint(prompt, systemPrompt, timeoutMs);
+  }
+  return getProvider().run(prompt, systemPrompt, timeoutMs);
+}
+
+/**
  * Synchronous check: is AI enrichment potentially enabled?
  * Used by observation hook to decide whether to spawn background process.
- * Does NOT check CLI availability (that's async). Just checks env var.
+ * Does NOT check provider availability (that may be slow). Just checks env var.
  */
 export function isAIEnrichmentEnabled(): boolean {
   const envEnabled = isEnvEnabled();
   if (envEnabled === false) return false;
   // If explicitly enabled or auto-detect, optimistically return true.
-  // The background process will handle CLI availability check.
+  // The background process will handle provider availability check.
   return true;
-}
-
-/**
- * Run a prompt through `claude --print` and return the raw text result.
- * Uses --print mode which doesn't create a visible conversation.
- * When a mock is set (testing), delegates to the mock instead.
- */
-function runClaudePrint(prompt: string, systemPrompt: string, timeoutMs: number): string | null {
-  // Use mock if set (testing)
-  if (_mockRunClaudePrint) {
-    return _mockRunClaudePrint(prompt, systemPrompt, timeoutMs);
-  }
-
-  try {
-    const result = execFileSync('claude', [
-      '--print',
-      '--model', 'haiku',
-      '--system-prompt', systemPrompt,
-      '--max-turns', '1',
-      '--no-input',
-      '-p', prompt,
-    ], {
-      encoding: 'utf-8',
-      timeout: timeoutMs,
-      stdio: ['pipe', 'pipe', 'ignore'], // stdin pipe, stdout pipe, stderr ignore
-    });
-    return result.trim() || null;
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Check if `claude` CLI is available and cache the result.
- * Env override (false/0) always takes priority over cache.
- */
-function isClaudeCliAvailable(): boolean {
-  // Env override always wins — even over cached/mocked state
-  const envEnabled = isEnvEnabled();
-  if (envEnabled === false) return false;
-
-  if (_cliAvailable !== null) return _cliAvailable;
-
-  try {
-    execFileSync('claude', ['--version'], {
-      encoding: 'utf-8',
-      timeout: 5000,
-      stdio: ['pipe', 'pipe', 'ignore'],
-    });
-    _cliAvailable = true;
-    return true;
-  } catch {
-    _cliAvailable = false;
-    return false;
-  }
 }
 
 /**
@@ -191,10 +182,9 @@ export function parseAIResponse(text: string): EnrichedObservation | null {
 }
 
 /**
- * Enrich an observation using `claude --print` CLI.
+ * Enrich an observation using the configured AI provider.
  *
- * Uses --print mode to avoid creating visible sub-conversations.
- * Returns enriched data if CLI is available and succeeds,
+ * Returns enriched data if provider is available and succeeds,
  * or null to signal fallback to template-based extraction.
  */
 export async function enrichWithAI(
@@ -203,13 +193,13 @@ export async function enrichWithAI(
   toolResponse: string,
   timeoutMs: number = 15000
 ): Promise<EnrichedObservation | null> {
-  if (!isClaudeCliAvailable()) return null;
+  if (!isProviderAvailable()) return null;
 
   try {
     const prompt = buildExtractionPrompt(toolName, toolInput, toolResponse);
     const systemPrompt = 'You are a code observation analyzer. Extract structured insights from tool usage observations. Return only valid JSON.';
 
-    const resultText = runClaudePrint(prompt, systemPrompt, timeoutMs);
+    const resultText = await runProvider(prompt, systemPrompt, timeoutMs);
     if (!resultText) return null;
     return parseAIResponse(resultText);
   } catch {
@@ -218,29 +208,40 @@ export async function enrichWithAI(
 }
 
 /**
- * Check if AI enrichment is available (`claude` CLI installed)
+ * Check if AI enrichment is available (provider configured and reachable)
  */
 export async function isAIEnrichmentAvailable(): Promise<boolean> {
-  return isClaudeCliAvailable();
+  return isProviderAvailable();
 }
 
 /**
- * Reset cached CLI availability (for testing)
+ * Reset cached provider and mock state (for testing)
  */
 export function resetAIEnrichmentCache(): void {
-  _cliAvailable = null;
+  _resolvedProvider = null;
+  _providerConfig = undefined;
   _mockRunClaudePrint = null;
 }
 
 /**
- * Override CLI availability for testing (inject mock)
+ * Override provider availability for testing (inject mock).
+ * Sets the mock which makes isProviderAvailable() return true.
  */
 export function _setCliAvailableForTesting(available: boolean): void {
-  _cliAvailable = available;
+  if (available) {
+    // Set a pass-through mock that marks provider as available
+    if (!_mockRunClaudePrint) {
+      _mockRunClaudePrint = () => null;
+    }
+  } else {
+    _mockRunClaudePrint = null;
+    // Force provider to be unavailable by clearing cache
+    _resolvedProvider = null;
+  }
 }
 
 /**
- * Inject a mock for runClaudePrint (for testing).
+ * Inject a mock for the AI provider run function (for testing).
  * The mock receives (prompt, systemPrompt, timeoutMs) and returns string | null.
  * Pass null to clear the mock.
  */
@@ -248,9 +249,6 @@ export function _setRunClaudePrintMockForTesting(
   fn: ((prompt: string, systemPrompt: string, timeoutMs: number) => string | null) | null
 ): void {
   _mockRunClaudePrint = fn;
-  if (fn) {
-    _cliAvailable = true; // Mock implies CLI is "available"
-  }
 }
 
 // ===== Session Summary Enrichment =====
@@ -334,24 +332,23 @@ export function parseSummaryResponse(text: string): EnrichedSummary | null {
 }
 
 /**
- * Enrich a session summary using `claude --print` CLI.
+ * Enrich a session summary using the configured AI provider.
  *
  * Takes template-based summary + last assistant message from transcript,
  * returns AI-enhanced completed/nextSteps fields.
- * Uses --print mode to avoid creating visible sub-conversations.
  */
 export async function enrichSummaryWithAI(
   templateSummary: string,
   lastAssistantMessage: string,
   timeoutMs: number = 20000
 ): Promise<EnrichedSummary | null> {
-  if (!isClaudeCliAvailable()) return null;
+  if (!isProviderAvailable()) return null;
 
   try {
     const prompt = buildSummaryPrompt(templateSummary, lastAssistantMessage);
     const systemPrompt = 'You are a session summary analyzer. Produce concise, accurate session summaries. Return only valid JSON.';
 
-    const resultText = runClaudePrint(prompt, systemPrompt, timeoutMs);
+    const resultText = await runProvider(prompt, systemPrompt, timeoutMs);
     if (!resultText) return null;
     return parseSummaryResponse(resultText);
   } catch {
@@ -413,7 +410,7 @@ export function parseCompressionResponse(text: string): CompressedObservation | 
 }
 
 /**
- * Compress a single observation using `claude --print` CLI.
+ * Compress a single observation using the configured AI provider.
  * Returns a dense 50-150 char summary suitable for context injection.
  */
 export async function compressObservationWithAI(
@@ -424,13 +421,13 @@ export async function compressObservationWithAI(
   narrative?: string,
   timeoutMs: number = 10000
 ): Promise<CompressedObservation | null> {
-  if (!isClaudeCliAvailable()) return null;
+  if (!isProviderAvailable()) return null;
 
   try {
     const prompt = buildCompressionPrompt(toolName, toolInput, toolResponse, subtitle, narrative);
     const systemPrompt = 'You are a data compressor. Produce the shortest possible accurate summary. Return only valid JSON.';
 
-    const resultText = runClaudePrint(prompt, systemPrompt, timeoutMs);
+    const resultText = await runProvider(prompt, systemPrompt, timeoutMs);
     if (!resultText) return null;
     return parseCompressionResponse(resultText);
   } catch {
@@ -493,7 +490,7 @@ export function parseSessionDigestResponse(text: string): SessionDigest | null {
 }
 
 /**
- * Generate a session-level digest using `claude --print` CLI.
+ * Generate a session-level digest using the configured AI provider.
  * Compresses an entire session into a 200-500 char digest.
  */
 export async function generateSessionDigestWithAI(
@@ -503,13 +500,13 @@ export async function generateSessionDigestWithAI(
   filesModified: string[],
   timeoutMs: number = 15000
 ): Promise<SessionDigest | null> {
-  if (!isClaudeCliAvailable()) return null;
+  if (!isProviderAvailable()) return null;
 
   try {
     const prompt = buildSessionDigestPrompt(request, observationSummaries, completed, filesModified);
     const systemPrompt = 'You are a session compressor. Produce the shortest possible accurate digest of a coding session. Return only valid JSON.';
 
-    const resultText = runClaudePrint(prompt, systemPrompt, timeoutMs);
+    const resultText = await runProvider(prompt, systemPrompt, timeoutMs);
     if (!resultText) return null;
     return parseSessionDigestResponse(resultText);
   } catch {

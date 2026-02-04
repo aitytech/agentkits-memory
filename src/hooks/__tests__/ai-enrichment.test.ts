@@ -26,6 +26,7 @@ import {
   generateSessionDigestWithAI,
   _setRunClaudePrintMockForTesting,
   _setCliAvailableForTesting,
+  setAIProviderConfig,
 } from '../ai-enrichment.js';
 
 describe('AI Enrichment Module', () => {
@@ -1013,6 +1014,50 @@ describe('AI Enrichment Module', () => {
       const elapsed = Date.now() - start;
       expect(result).toBeNull();
       expect(elapsed).toBeLessThan(5000);
+    });
+  });
+
+  // ===== Provider Config =====
+
+  describe('setAIProviderConfig', () => {
+    it('should accept provider config without error', () => {
+      expect(() => setAIProviderConfig({ provider: 'openai', apiKey: 'test' })).not.toThrow();
+    });
+
+    it('should accept undefined to reset config', () => {
+      setAIProviderConfig({ provider: 'gemini', apiKey: 'key' });
+      expect(() => setAIProviderConfig(undefined)).not.toThrow();
+    });
+
+    it('should force re-resolution so next enrichment uses new provider', async () => {
+      // Set to openai with no API key → provider unavailable → enrichment returns null
+      setAIProviderConfig({ provider: 'openai' });
+      delete process.env.AGENTKITS_AI_ENRICHMENT;
+      const result = await enrichWithAI('Read', '{}', '{}');
+      expect(result).toBeNull();
+    });
+
+    it('should not affect mock-based testing', async () => {
+      setAIProviderConfig({ provider: 'openai', apiKey: 'test' });
+      _setRunClaudePrintMockForTesting(() => JSON.stringify({
+        subtitle: 'Test subtitle',
+        narrative: 'Test narrative about something.',
+        facts: ['Fact 1'],
+        concepts: ['concept1'],
+        confidence: 0.9,
+      }));
+      delete process.env.AGENTKITS_AI_ENRICHMENT;
+      const result = await enrichWithAI('Read', '{"file_path":"test.ts"}', 'content');
+      expect(result).not.toBeNull();
+      expect(result!.subtitle).toBe('Test subtitle');
+    });
+
+    it('should be cleared by resetAIEnrichmentCache', () => {
+      setAIProviderConfig({ provider: 'gemini', apiKey: 'key' });
+      resetAIEnrichmentCache();
+      // After reset, should use default provider (claude-cli)
+      // No error should occur
+      expect(() => enrichWithAI('Read', '{}', '{}')).not.toThrow();
     });
   });
 });

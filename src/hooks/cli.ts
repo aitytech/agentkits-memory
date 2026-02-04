@@ -286,7 +286,16 @@ async function main(): Promise<void> {
             if (eqIndex <= 0) continue;
             const key = arg.slice(0, eqIndex);
             const value = arg.slice(eqIndex + 1);
-            if (key in settings.context) {
+
+            // Handle aiProvider.* keys (e.g., aiProvider.provider=openai)
+            if (key.startsWith('aiProvider.')) {
+              const subKey = key.slice('aiProvider.'.length);
+              if (!settings.aiProvider) {
+                settings.aiProvider = { provider: 'claude-cli' };
+              }
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any
+              (settings.aiProvider as any)[subKey] = value;
+            } else if (key in settings.context) {
               const contextKey = key as keyof typeof settings.context;
               const current = settings.context[contextKey];
               if (typeof current === 'boolean') {

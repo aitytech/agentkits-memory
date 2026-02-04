@@ -29,7 +29,6 @@ import {
   detectIntent,
   extractIntents,
   extractCodeDiffs,
-  formatDiffFact,
   truncate,
   computeContentHash,
   ContextConfig,
@@ -44,7 +43,7 @@ import {
   ExportSession,
   ImportResult,
 } from './types.js';
-import { enrichWithAI, enrichSummaryWithAI, compressObservationWithAI, generateSessionDigestWithAI } from './ai-enrichment.js';
+import { enrichWithAI, enrichSummaryWithAI, compressObservationWithAI, generateSessionDigestWithAI, setAIProviderConfig } from './ai-enrichment.js';
 
 /**
  * Memory Hook Service Configuration
@@ -113,6 +112,12 @@ export class MemoryHookService {
 
     // Create schema
     this.createSchema();
+
+    // Configure AI provider from persistent settings
+    const settings = this.loadSettings();
+    if (settings.aiProvider) {
+      setAIProviderConfig(settings.aiProvider);
+    }
 
     this.initialized = true;
   }
@@ -997,6 +1002,7 @@ export class MemoryHookService {
         const raw = JSON.parse(readFileSync(settingsPath, 'utf-8'));
         return {
           context: { ...DEFAULT_CONTEXT_CONFIG, ...(raw.context || {}) },
+          aiProvider: raw.aiProvider || undefined,
         };
       }
     } catch {
