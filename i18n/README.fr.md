@@ -16,6 +16,9 @@
   <img src="https://img.shields.io/badge/Windsurf-Compatible-cyan" alt="Windsurf">
   <img src="https://img.shields.io/badge/Cline-Compatible-orange" alt="Cline">
   <img src="https://img.shields.io/badge/OpenCode-Compatible-green" alt="OpenCode">
+  <br>
+  <img src="https://img.shields.io/badge/tests-970_passed-brightgreen" alt="Tests">
+  <img src="https://img.shields.io/badge/coverage-91%25-brightgreen" alt="Coverage">
 </p>
 
 <p align="center">
@@ -611,6 +614,42 @@ interface ProjectMemoryConfig {
 | `count(namespace?)` | Compter les entrées |
 | `listNamespaces()` | Lister tous les namespaces |
 | `getStats()` | Obtenir les statistiques |
+
+---
+
+## Qualité du Code
+
+AgentKits Memory est rigoureusement testé avec **970 tests unitaires** répartis sur 21 suites de tests.
+
+| Métrique | Couverture |
+|----------|-----------|
+| **Instructions** | 90.29% |
+| **Branches** | 80.85% |
+| **Fonctions** | 90.54% |
+| **Lignes** | 91.74% |
+
+### Catégories de Tests
+
+| Catégorie | Tests | Couverture |
+|-----------|-------|-----------|
+| Service Mémoire Core | 56 | CRUD, recherche, pagination, catégories, tags, import/export |
+| Backend SQLite | 65 | Schéma, migrations, FTS5, transactions, gestion d'erreurs |
+| Index Vectoriel HNSW | 47 | Insertion, recherche, suppression, persistance, cas limites |
+| Recherche Hybride | 44 | FTS + fusion vectorielle, scoring, classement, filtres |
+| Économie de Tokens | 27 | Budgets de recherche 3 couches, troncature, optimisation |
+| Système d'Embeddings | 63 | Cache, sous-processus, modèles locaux, support CJK |
+| Système de Hooks | 502 | Contexte, init session, observation, résumé, enrichissement IA, cycle de vie, workers, adaptateurs, types |
+| Serveur MCP | 48 | 9 outils MCP, validation, réponses d'erreur |
+| CLI | 34 | Détection de plateforme, génération de règles |
+| Intégration | 84 | Flux end-to-end, intégration embeddings, multi-session |
+
+```bash
+# Exécuter les tests
+npm test
+
+# Exécuter avec couverture
+npm run test:coverage
+```
 
 ---
 

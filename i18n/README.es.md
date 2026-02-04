@@ -16,6 +16,9 @@
   <img src="https://img.shields.io/badge/Windsurf-Compatible-cyan" alt="Windsurf">
   <img src="https://img.shields.io/badge/Cline-Compatible-orange" alt="Cline">
   <img src="https://img.shields.io/badge/OpenCode-Compatible-green" alt="OpenCode">
+  <br>
+  <img src="https://img.shields.io/badge/tests-970_passed-brightgreen" alt="Tests">
+  <img src="https://img.shields.io/badge/coverage-91%25-brightgreen" alt="Coverage">
 </p>
 
 <p align="center">
@@ -611,6 +614,42 @@ interface ProjectMemoryConfig {
 | `count(namespace?)` | Contar entradas |
 | `listNamespaces()` | Listar todos los espacios de nombres |
 | `getStats()` | Obtener estadísticas |
+
+---
+
+## Calidad del Código
+
+AgentKits Memory está exhaustivamente probado con **970 tests unitarios** en 21 suites de test.
+
+| Métrica | Cobertura |
+|---------|-----------|
+| **Sentencias** | 90.29% |
+| **Ramas** | 80.85% |
+| **Funciones** | 90.54% |
+| **Líneas** | 91.74% |
+
+### Categorías de Tests
+
+| Categoría | Tests | Cobertura |
+|-----------|-------|-----------|
+| Servicio de Memoria Core | 56 | CRUD, búsqueda, paginación, categorías, tags, importar/exportar |
+| Backend SQLite | 65 | Schema, migraciones, FTS5, transacciones, manejo de errores |
+| Índice Vectorial HNSW | 47 | Inserción, búsqueda, eliminación, persistencia, casos límite |
+| Búsqueda Híbrida | 44 | FTS + fusión vectorial, puntuación, ranking, filtros |
+| Economía de Tokens | 27 | Presupuestos de búsqueda 3 capas, truncamiento, optimización |
+| Sistema de Embeddings | 63 | Caché, subprocesos, modelos locales, soporte CJK |
+| Sistema de Hooks | 502 | Contexto, init de sesión, observación, resumen, enriquecimiento IA, ciclo de vida, workers, adaptadores, tipos |
+| Servidor MCP | 48 | 9 herramientas MCP, validación, respuestas de error |
+| CLI | 34 | Detección de plataforma, generación de reglas |
+| Integración | 84 | Flujos end-to-end, integración de embeddings, multi-sesión |
+
+```bash
+# Ejecutar tests
+npm test
+
+# Ejecutar con cobertura
+npm run test:coverage
+```
 
 ---
 

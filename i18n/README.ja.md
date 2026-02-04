@@ -16,6 +16,9 @@
   <img src="https://img.shields.io/badge/Windsurf-Compatible-cyan" alt="Windsurf">
   <img src="https://img.shields.io/badge/Cline-Compatible-orange" alt="Cline">
   <img src="https://img.shields.io/badge/OpenCode-Compatible-green" alt="OpenCode">
+  <br>
+  <img src="https://img.shields.io/badge/tests-970_passed-brightgreen" alt="Tests">
+  <img src="https://img.shields.io/badge/coverage-91%25-brightgreen" alt="Coverage">
 </p>
 
 <p align="center">
@@ -611,6 +614,42 @@ interface ProjectMemoryConfig {
 | `count(namespace?)` | エントリーをカウント |
 | `listNamespaces()` | すべての名前空間をリスト表示 |
 | `getStats()` | 統計を取得 |
+
+---
+
+## コード品質
+
+AgentKits Memoryは21のテストスイートにわたる**970の単体テスト**で徹底的にテストされています。
+
+| 指標 | カバレッジ |
+|------|-----------|
+| **ステートメント** | 90.29% |
+| **ブランチ** | 80.85% |
+| **関数** | 90.54% |
+| **行** | 91.74% |
+
+### テストカテゴリ
+
+| カテゴリ | テスト数 | カバー内容 |
+|----------|---------|-----------|
+| コアメモリサービス | 56 | CRUD、検索、ページネーション、カテゴリ、タグ、インポート/エクスポート |
+| SQLiteバックエンド | 65 | スキーマ、マイグレーション、FTS5、トランザクション、エラーハンドリング |
+| HNSWベクトルインデックス | 47 | 挿入、検索、削除、永続化、エッジケース |
+| ハイブリッド検索 | 44 | FTS + ベクトル融合、スコアリング、ランキング、フィルター |
+| トークンエコノミクス | 27 | 3層検索バジェット、トランケーション、最適化 |
+| 埋め込みシステム | 63 | キャッシュ、サブプロセス、ローカルモデル、CJKサポート |
+| フックシステム | 502 | コンテキスト、セッション初期化、オブザベーション、サマライズ、AI拡張、サービスライフサイクル、キューワーカー、アダプター、型 |
+| MCPサーバー | 48 | 全9つのMCPツール、バリデーション、エラーレスポンス |
+| CLI | 34 | プラットフォーム検出、ルール生成 |
+| 統合テスト | 84 | エンドツーエンドフロー、埋め込み統合、マルチセッション |
+
+```bash
+# テスト実行
+npm test
+
+# カバレッジ付きテスト
+npm run test:coverage
+```
 
 ---
 

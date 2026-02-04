@@ -16,6 +16,9 @@
   <img src="https://img.shields.io/badge/Windsurf-Compatible-cyan" alt="Windsurf">
   <img src="https://img.shields.io/badge/Cline-Compatible-orange" alt="Cline">
   <img src="https://img.shields.io/badge/OpenCode-Compatible-green" alt="OpenCode">
+  <br>
+  <img src="https://img.shields.io/badge/tests-970_passed-brightgreen" alt="Tests">
+  <img src="https://img.shields.io/badge/coverage-91%25-brightgreen" alt="Coverage">
 </p>
 
 <p align="center">
@@ -611,6 +614,42 @@ interface ProjectMemoryConfig {
 | `count(namespace?)` | 항목 수 세기 |
 | `listNamespaces()` | 모든 네임스페이스 나열 |
 | `getStats()` | 통계 가져오기 |
+
+---
+
+## 코드 품질
+
+AgentKits Memory는 21개의 테스트 스위트에 걸쳐 **970개의 단위 테스트**로 철저하게 테스트되었습니다.
+
+| 지표 | 커버리지 |
+|------|---------|
+| **구문** | 90.29% |
+| **분기** | 80.85% |
+| **함수** | 90.54% |
+| **라인** | 91.74% |
+
+### 테스트 카테고리
+
+| 카테고리 | 테스트 수 | 커버 내용 |
+|----------|---------|----------|
+| 코어 메모리 서비스 | 56 | CRUD, 검색, 페이지네이션, 카테고리, 태그, 가져오기/내보내기 |
+| SQLite 백엔드 | 65 | 스키마, 마이그레이션, FTS5, 트랜잭션, 오류 처리 |
+| HNSW 벡터 인덱스 | 47 | 삽입, 검색, 삭제, 영속성, 엣지 케이스 |
+| 하이브리드 검색 | 44 | FTS + 벡터 융합, 스코어링, 랭킹, 필터 |
+| 토큰 이코노믹스 | 27 | 3계층 검색 예산, 절삭, 최적화 |
+| 임베딩 시스템 | 63 | 캐시, 서브프로세스, 로컬 모델, CJK 지원 |
+| 훅 시스템 | 502 | 컨텍스트, 세션 초기화, 관찰, 요약, AI 강화, 서비스 라이프사이클, 큐 워커, 어댑터, 타입 |
+| MCP 서버 | 48 | 전체 9개 MCP 도구, 유효성 검사, 오류 응답 |
+| CLI | 34 | 플랫폼 감지, 규칙 생성 |
+| 통합 테스트 | 84 | 엔드투엔드 플로우, 임베딩 통합, 멀티 세션 |
+
+```bash
+# 테스트 실행
+npm test
+
+# 커버리지 포함 테스트
+npm run test:coverage
+```
 
 ---
 

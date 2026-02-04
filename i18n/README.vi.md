@@ -16,6 +16,9 @@
   <img src="https://img.shields.io/badge/Windsurf-Compatible-cyan" alt="Windsurf">
   <img src="https://img.shields.io/badge/Cline-Compatible-orange" alt="Cline">
   <img src="https://img.shields.io/badge/OpenCode-Compatible-green" alt="OpenCode">
+  <br>
+  <img src="https://img.shields.io/badge/tests-970_passed-brightgreen" alt="Tests">
+  <img src="https://img.shields.io/badge/coverage-91%25-brightgreen" alt="Coverage">
 </p>
 
 <p align="center">
@@ -611,6 +614,42 @@ interface ProjectMemoryConfig {
 | `count(namespace?)` | Đếm entries |
 | `listNamespaces()` | Liệt kê tất cả namespaces |
 | `getStats()` | Lấy thống kê |
+
+---
+
+## Chất lượng Mã nguồn
+
+AgentKits Memory được kiểm thử kỹ lưỡng với **970 unit test** trên 21 test suite.
+
+| Chỉ số | Độ phủ |
+|--------|--------|
+| **Câu lệnh** | 90.29% |
+| **Nhánh** | 80.85% |
+| **Hàm** | 90.54% |
+| **Dòng** | 91.74% |
+
+### Danh mục Test
+
+| Danh mục | Số test | Nội dung kiểm thử |
+|----------|---------|-------------------|
+| Dịch vụ Bộ nhớ Core | 56 | CRUD, tìm kiếm, phân trang, danh mục, thẻ, nhập/xuất |
+| Backend SQLite | 65 | Schema, migration, FTS5, transaction, xử lý lỗi |
+| Chỉ mục Vector HNSW | 47 | Chèn, tìm kiếm, xóa, lưu trữ, trường hợp biên |
+| Tìm kiếm Hybrid | 44 | FTS + kết hợp vector, chấm điểm, xếp hạng, bộ lọc |
+| Kinh tế Token | 27 | Ngân sách tìm kiếm 3 lớp, cắt ngắn, tối ưu hóa |
+| Hệ thống Embedding | 63 | Bộ nhớ đệm, subprocess, mô hình cục bộ, hỗ trợ CJK |
+| Hệ thống Hook | 502 | Context, khởi tạo session, observation, tóm tắt, làm giàu AI, vòng đời service, queue worker, adapter, type |
+| Máy chủ MCP | 48 | 9 công cụ MCP, xác thực, phản hồi lỗi |
+| CLI | 34 | Phát hiện nền tảng, tạo quy tắc |
+| Tích hợp | 84 | Luồng end-to-end, tích hợp embedding, đa session |
+
+```bash
+# Chạy test
+npm test
+
+# Chạy với độ phủ
+npm run test:coverage
+```
 
 ---
 

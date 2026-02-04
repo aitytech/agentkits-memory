@@ -16,6 +16,9 @@
   <img src="https://img.shields.io/badge/Windsurf-Compatible-cyan" alt="Windsurf">
   <img src="https://img.shields.io/badge/Cline-Compatible-orange" alt="Cline">
   <img src="https://img.shields.io/badge/OpenCode-Compatible-green" alt="OpenCode">
+  <br>
+  <img src="https://img.shields.io/badge/tests-970_passed-brightgreen" alt="Tests">
+  <img src="https://img.shields.io/badge/coverage-91%25-brightgreen" alt="Coverage">
 </p>
 
 <p align="center">
@@ -611,6 +614,42 @@ interface ProjectMemoryConfig {
 | `count(namespace?)` | Count entries |
 | `listNamespaces()` | List all namespaces |
 | `getStats()` | Get statistics |
+
+---
+
+## Code Quality
+
+AgentKits Memory is thoroughly tested with **970 unit tests** across 21 test suites.
+
+| Metric | Coverage |
+|--------|----------|
+| **Statements** | 90.29% |
+| **Branches** | 80.85% |
+| **Functions** | 90.54% |
+| **Lines** | 91.74% |
+
+### Test Categories
+
+| Category | Tests | What's Covered |
+|----------|-------|----------------|
+| Core Memory Service | 56 | CRUD, search, pagination, categories, tags, import/export |
+| SQLite Backend | 65 | Schema, migrations, FTS5, transactions, error handling |
+| HNSW Vector Index | 47 | Insert, search, delete, persistence, edge cases |
+| Hybrid Search | 44 | FTS + vector fusion, scoring, ranking, filters |
+| Token Economics | 27 | 3-layer search budgets, truncation, optimization |
+| Embedding System | 63 | Cache, subprocess, local models, CJK support |
+| Hook System | 502 | Context, session-init, observation, summarize, AI enrichment, service lifecycle, queue workers, adapters, types |
+| MCP Server | 48 | All 9 MCP tools, validation, error responses |
+| CLI | 34 | Platform detection, rules generation |
+| Integration | 84 | End-to-end flows, embedding integration, multi-session |
+
+```bash
+# Run tests
+npm test
+
+# Run with coverage
+npm run test:coverage
+```
 
 ---
 

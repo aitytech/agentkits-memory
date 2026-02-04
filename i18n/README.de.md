@@ -16,6 +16,9 @@
   <img src="https://img.shields.io/badge/Windsurf-Compatible-cyan" alt="Windsurf">
   <img src="https://img.shields.io/badge/Cline-Compatible-orange" alt="Cline">
   <img src="https://img.shields.io/badge/OpenCode-Compatible-green" alt="OpenCode">
+  <br>
+  <img src="https://img.shields.io/badge/tests-970_passed-brightgreen" alt="Tests">
+  <img src="https://img.shields.io/badge/coverage-91%25-brightgreen" alt="Coverage">
 </p>
 
 <p align="center">
@@ -611,6 +614,42 @@ interface ProjectMemoryConfig {
 | `count(namespace?)` | Einträge zählen |
 | `listNamespaces()` | Alle Namespaces auflisten |
 | `getStats()` | Statistiken abrufen |
+
+---
+
+## Codequalität
+
+AgentKits Memory ist gründlich getestet mit **970 Unit-Tests** in 21 Test-Suites.
+
+| Metrik | Abdeckung |
+|--------|-----------|
+| **Anweisungen** | 90.29% |
+| **Verzweigungen** | 80.85% |
+| **Funktionen** | 90.54% |
+| **Zeilen** | 91.74% |
+
+### Testkategorien
+
+| Kategorie | Tests | Abgedeckt |
+|-----------|-------|-----------|
+| Kern-Speicherdienst | 56 | CRUD, Suche, Paginierung, Kategorien, Tags, Import/Export |
+| SQLite-Backend | 65 | Schema, Migrationen, FTS5, Transaktionen, Fehlerbehandlung |
+| HNSW-Vektorindex | 47 | Einfügen, Suche, Löschen, Persistenz, Grenzfälle |
+| Hybride Suche | 44 | FTS + Vektor-Fusion, Bewertung, Ranking, Filter |
+| Token-Ökonomie | 27 | 3-Schicht-Suchbudgets, Kürzung, Optimierung |
+| Embedding-System | 63 | Cache, Subprozess, lokale Modelle, CJK-Unterstützung |
+| Hook-System | 502 | Kontext, Session-Init, Beobachtung, Zusammenfassung, KI-Anreicherung, Service-Lebenszyklus, Queue-Worker, Adapter, Typen |
+| MCP-Server | 48 | Alle 9 MCP-Tools, Validierung, Fehlerantworten |
+| CLI | 34 | Plattformerkennung, Regelgenerierung |
+| Integration | 84 | End-to-End-Flows, Embedding-Integration, Multi-Session |
+
+```bash
+# Tests ausführen
+npm test
+
+# Mit Abdeckung ausführen
+npm run test:coverage
+```
 
 ---
 

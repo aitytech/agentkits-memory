@@ -16,6 +16,9 @@
   <img src="https://img.shields.io/badge/Windsurf-Compatible-cyan" alt="Windsurf">
   <img src="https://img.shields.io/badge/Cline-Compatible-orange" alt="Cline">
   <img src="https://img.shields.io/badge/OpenCode-Compatible-green" alt="OpenCode">
+  <br>
+  <img src="https://img.shields.io/badge/tests-970_passed-brightgreen" alt="Tests">
+  <img src="https://img.shields.io/badge/coverage-91%25-brightgreen" alt="Coverage">
 </p>
 
 <p align="center">
@@ -611,6 +614,42 @@ interface ProjectMemoryConfig {
 | `count(namespace?)` | 计数条目 |
 | `listNamespaces()` | 列出所有命名空间 |
 | `getStats()` | 获取统计信息 |
+
+---
+
+## 代码质量
+
+AgentKits Memory 经过全面测试，包含 **970 个单元测试**，覆盖 21 个测试套件。
+
+| 指标 | 覆盖率 |
+|------|--------|
+| **语句** | 90.29% |
+| **分支** | 80.85% |
+| **函数** | 90.54% |
+| **行** | 91.74% |
+
+### 测试分类
+
+| 分类 | 测试数 | 覆盖内容 |
+|------|--------|----------|
+| 核心内存服务 | 56 | CRUD、搜索、分页、分类、标签、导入/导出 |
+| SQLite 后端 | 65 | Schema、迁移、FTS5、事务、错误处理 |
+| HNSW 向量索引 | 47 | 插入、搜索、删除、持久化、边界情况 |
+| 混合搜索 | 44 | FTS + 向量融合、评分、排名、过滤 |
+| Token 经济学 | 27 | 三层搜索预算、截断、优化 |
+| 嵌入系统 | 63 | 缓存、子进程、本地模型、CJK 支持 |
+| Hook 系统 | 502 | 上下文、会话初始化、观察、摘要、AI 增强、服务生命周期、队列工作器、适配器、类型 |
+| MCP 服务器 | 48 | 全部 9 个 MCP 工具、验证、错误响应 |
+| CLI | 34 | 平台检测、规则生成 |
+| 集成测试 | 84 | 端到端流程、嵌入集成、多会话 |
+
+```bash
+# 运行测试
+npm test
+
+# 运行覆盖率测试
+npm run test:coverage
+```
 
 ---
 
