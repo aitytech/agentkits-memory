@@ -19,25 +19,21 @@
 </p>
 
 <p align="center">
-  <strong>Persistent Memory System for AI Coding Assistants via MCP</strong>
+  <strong>Persistent Memory System for AI Coding Assistants</strong>
 </p>
 
 <p align="center">
-  <em>Fast. Local. Zero external dependencies.</em>
-</p>
-
-<p align="center">
-  Store decisions, patterns, errors, and context that persists across sessions.<br>
-  No cloud. No API keys. No setup. Just works.
+  Your AI assistant forgets everything between sessions. AgentKits Memory fixes that.<br>
+  Decisions, patterns, errors, and context — all persisted locally via MCP.
 </p>
 
 <p align="center">
   <a href="#quick-start">Quick Start</a> •
-  <a href="#features">Features</a> •
+  <a href="#how-it-works">How It Works</a> •
   <a href="#multi-platform-support">Platforms</a> •
   <a href="#cli-commands">CLI</a> •
   <a href="#web-viewer">Web Viewer</a> •
-  <a href="https://agentkits.net">agentkits.net</a>
+  <a href="https://agentkits.net/memory">Docs</a>
 </p>
 
 ---
@@ -58,6 +54,52 @@
 | **3-Layer Search** | Progressive disclosure saves ~87% tokens vs fetching everything |
 | **Lifecycle Mgmt** | Auto-compress, archive, and clean up old sessions |
 | **Export/Import** | Backup and restore memories as JSON |
+
+---
+
+## How It Works
+
+```
+Session 1: "Use JWT for auth"          Session 2: "Add login endpoint"
+┌──────────────────────────┐          ┌──────────────────────────┐
+│  You code with AI...     │          │  AI already knows:       │
+│  AI makes decisions      │          │  ✓ JWT auth decision     │
+│  AI encounters errors    │   ───►   │  ✓ Error solutions       │
+│  AI learns patterns      │  saved   │  ✓ Code patterns         │
+│                          │          │  ✓ Session context        │
+└──────────────────────────┘          └──────────────────────────┘
+         │                                      ▲
+         ▼                                      │
+    .claude/memory/memory.db  ──────────────────┘
+    (SQLite, 100% local)
+```
+
+1. **Setup once** — `npx agentkits-memory-setup` configures your platform
+2. **Auto-capture** — Hooks record decisions, tool usage, and summaries as you work
+3. **Context injection** — Next session starts with relevant history from past sessions
+4. **Background processing** — Workers enrich observations with AI, generate embeddings, compress old data
+5. **Search anytime** — AI uses MCP tools (`memory_search` → `memory_details`) to find past context
+
+All data stays in `.claude/memory/memory.db` on your machine. No cloud. No API keys required.
+
+---
+
+## Design Decisions That Matter
+
+Most memory tools scatter data across markdown files, require Python runtimes, or send your code to external APIs. AgentKits Memory makes fundamentally different choices:
+
+| Design Choice | Why It Matters |
+|---------------|----------------|
+| **Single SQLite database** | One file (`memory.db`) holds everything — memories, sessions, observations, embeddings. No scattered files to sync, no merge conflicts, no orphaned data. Backup = copy one file |
+| **Native Node.js, zero Python** | Runs wherever Node runs. No conda, no pip, no virtualenv. Same language as your MCP server — one `npx` command, done |
+| **Token-efficient 3-layer search** | Search index first (~50 tokens/result), then timeline context, then full details. Only fetch what you need. Other tools dump entire memory files into context, burning tokens on irrelevant content |
+| **Auto-capture via hooks** | Decisions, patterns, and errors are recorded as they happen — not after you remember to save them. Session context injection happens automatically on next session start |
+| **Local embeddings, no API calls** | Vector search uses a local ONNX model (multilingual-e5-small). Semantic search works offline, costs nothing, and supports 100+ languages |
+| **Background workers** | AI enrichment, embedding generation, and compression run asynchronously. Your coding flow is never blocked |
+| **Multi-platform from day one** | One `--platform=all` flag configures Claude Code, Cursor, Windsurf, Cline, and OpenCode simultaneously. Same memory database, different editors |
+| **Structured observation data** | Tool usage is captured with type classification (read/write/execute/search), file tracking, intent detection, and AI-generated narratives — not raw text dumps |
+| **No process leaks** | Background workers self-terminate after 5 minutes, use PID-based lock files with stale-lock cleanup, and handle SIGTERM/SIGINT gracefully. No zombie processes, no orphaned workers |
+| **No memory leaks** | Hooks run as short-lived processes (not long-running daemons). Database connections close on shutdown. Embedding subprocess has bounded respawn (max 2), pending request timeouts, and graceful cleanup of all timers and queues |
 
 ---
 
@@ -341,21 +383,59 @@ Workers run automatically after session end. Each worker:
 
 ## AI Provider Configuration
 
-AI enrichment supports multiple providers:
+AI enrichment uses pluggable providers. Default is `claude-cli` (no API key needed).
 
-| Provider | Config Key | Notes |
-|----------|-----------|-------|
-| **Claude CLI** (default) | `claude-cli` | Uses `claude --print`, no API key needed |
-| **OpenAI** | `openai` | Requires `apiKey` |
-| **OpenRouter** | `openrouter` | Requires `apiKey` |
-| **Google Gemini** | `gemini` | Requires `apiKey` |
-| **GLM (Zhipu)** | `glm` | Requires `apiKey` |
+| Provider | Type | Default Model | Notes |
+|----------|------|---------------|-------|
+| **Claude CLI** | `claude-cli` | `haiku` | Uses `claude --print`, no API key needed |
+| **OpenAI** | `openai` | `gpt-4o-mini` | Any OpenAI model |
+| **Google Gemini** | `gemini` | `gemini-2.0-flash` | Google AI Studio key |
+| **OpenRouter** | `openai` | any | Set `baseUrl` to `https://openrouter.ai/api/v1` |
+| **GLM (Zhipu)** | `openai` | any | Set `baseUrl` to `https://open.bigmodel.cn/api/paas/v4` |
+| **Ollama** | `openai` | any | Set `baseUrl` to `http://localhost:11434/v1` |
 
-Configure via CLI:
+### Option 1: Environment Variables
+
 ```bash
+# OpenAI
+export AGENTKITS_AI_PROVIDER=openai
+export AGENTKITS_AI_API_KEY=sk-...
+
+# Google Gemini
+export AGENTKITS_AI_PROVIDER=gemini
+export AGENTKITS_AI_API_KEY=AIza...
+
+# OpenRouter (uses OpenAI-compatible format)
+export AGENTKITS_AI_PROVIDER=openai
+export AGENTKITS_AI_API_KEY=sk-or-...
+export AGENTKITS_AI_BASE_URL=https://openrouter.ai/api/v1
+export AGENTKITS_AI_MODEL=anthropic/claude-3.5-haiku
+
+# Local Ollama (no API key needed)
+export AGENTKITS_AI_PROVIDER=openai
+export AGENTKITS_AI_BASE_URL=http://localhost:11434/v1
+export AGENTKITS_AI_MODEL=llama3.2
+
+# Disable AI enrichment entirely
+export AGENTKITS_AI_ENRICHMENT=false
+```
+
+### Option 2: Persistent Settings
+
+```bash
+# Saved to .claude/memory/settings.json — persists across sessions
 npx agentkits-memory-hook settings . aiProvider.provider=openai aiProvider.apiKey=sk-...
 npx agentkits-memory-hook settings . aiProvider.provider=gemini aiProvider.apiKey=AIza...
+npx agentkits-memory-hook settings . aiProvider.baseUrl=https://openrouter.ai/api/v1
+
+# View current settings
+npx agentkits-memory-hook settings .
+
+# Reset to defaults
+npx agentkits-memory-hook settings . --reset
 ```
+
+> **Priority:** Environment variables override settings.json. Settings.json overrides defaults.
 
 ---
 

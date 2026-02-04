@@ -1278,7 +1278,17 @@ function getHTML(): string {
           <p class="subtitle">AgentKits Memory Database</p>
         </div>
       </div>
-      <div class="header-actions" id="header-actions-memories">
+      <div class="header-actions" id="header-actions-sessions">
+        <button class="btn" onclick="generateSessionEmbeddings('missing')">
+          <svg viewBox="0 0 24 24"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg>
+          Generate Embeddings
+        </button>
+        <button class="btn" onclick="loadSessions()">
+          <svg viewBox="0 0 24 24"><path d="M17.65 6.35C16.2 4.9 14.21 4 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08c-.82 2.33-3.04 4-5.65 4-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/></svg>
+          Refresh
+        </button>
+      </div>
+      <div class="header-actions" id="header-actions-memories" style="display:none;">
         <button class="btn btn-primary" onclick="openAddModal()">
           <svg viewBox="0 0 24 24"><path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>
           Add Memory
@@ -1292,56 +1302,24 @@ function getHTML(): string {
           Refresh
         </button>
       </div>
-      <div class="header-actions" id="header-actions-sessions" style="display:none;">
-        <button class="btn" onclick="generateSessionEmbeddings('missing')">
-          <svg viewBox="0 0 24 24"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg>
-          Generate Embeddings
-        </button>
-        <button class="btn" onclick="loadSessions()">
-          <svg viewBox="0 0 24 24"><path d="M17.65 6.35C16.2 4.9 14.21 4 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08c-.82 2.33-3.04 4-5.65 4-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/></svg>
-          Refresh
-        </button>
-      </div>
     </header>
 
     <!-- Tab Navigation -->
     <div class="tab-nav" style="display:flex;gap:4px;margin-bottom:24px;border-bottom:1px solid var(--border);padding-bottom:0;">
-      <button class="tab-btn active" onclick="switchTab('memories')" id="tab-memories"
+      <button class="tab-btn active" onclick="switchTab('sessions')" id="tab-sessions"
         style="padding:10px 20px;background:none;border:none;color:var(--text-primary);cursor:pointer;border-bottom:2px solid var(--accent);font-size:14px;font-weight:500;">
-        Memories
-      </button>
-      <button class="tab-btn" onclick="switchTab('sessions')" id="tab-sessions"
-        style="padding:10px 20px;background:none;border:none;color:var(--text-secondary);cursor:pointer;border-bottom:2px solid transparent;font-size:14px;font-weight:500;">
+        <svg viewBox="0 0 24 24" style="width:14px;height:14px;fill:currentColor;vertical-align:-2px;margin-right:6px;"><path d="M13 3c-4.97 0-9 4.03-9 9H1l3.89 3.89.07.14L9 12H6c0-3.87 3.13-7 7-7s7 3.13 7 7-3.13 7-7 7c-1.93 0-3.68-.79-4.94-2.06l-1.42 1.42C8.27 19.99 10.51 21 13 21c4.97 0 9-4.03 9-9s-4.03-9-9-9zm-1 5v5l4.28 2.54.72-1.21-3.5-2.08V8H12z"/></svg>
         Sessions
       </button>
+      <button class="tab-btn" onclick="switchTab('memories')" id="tab-memories"
+        style="padding:10px 20px;background:none;border:none;color:var(--text-secondary);cursor:pointer;border-bottom:2px solid transparent;font-size:14px;font-weight:500;">
+        <svg viewBox="0 0 24 24" style="width:14px;height:14px;fill:currentColor;vertical-align:-2px;margin-right:6px;"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/></svg>
+        Memories
+      </button>
     </div>
-
-    <!-- Memories Tab -->
-    <div id="memories-tab">
-    <div id="stats-container" class="stats-grid"></div>
-    <div id="namespace-pills" class="namespace-pills"></div>
-
-    <div class="controls">
-      <div class="search-box">
-        <svg viewBox="0 0 24 24"><path d="M15.5 14h-.79l-.28-.27C15.41 12.59 16 11.11 16 9.5 16 5.91 13.09 3 9.5 3S3 5.91 3 9.5 5.91 16 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></svg>
-        <input type="text" id="search-input" placeholder="Search memories..." oninput="debounceSearch()">
-      </div>
-      <select id="search-type" class="search-type-select" onchange="debounceSearch()">
-        <option value="hybrid">Hybrid (Text + Semantic)</option>
-        <option value="text">Text Only (FTS5)</option>
-        <option value="vector">Semantic Only (Vector)</option>
-      </select>
-    </div>
-
-    <div id="entries-container" class="entries-list">
-      <div class="loading"><div class="spinner"></div></div>
-    </div>
-
-    <div id="pagination" class="pagination"></div>
-    </div><!-- /memories-tab -->
 
     <!-- Sessions Tab -->
-    <div id="sessions-tab" style="display:none;">
+    <div id="sessions-tab">
       <div class="stats-grid" id="sessions-stats"></div>
       <div class="controls">
         <div class="search-box">
@@ -1363,6 +1341,30 @@ function getHTML(): string {
       </div>
       <div id="session-pagination" class="pagination"></div>
     </div>
+
+    <!-- Memories Tab -->
+    <div id="memories-tab" style="display:none;">
+    <div id="stats-container" class="stats-grid"></div>
+    <div id="namespace-pills" class="namespace-pills"></div>
+
+    <div class="controls">
+      <div class="search-box">
+        <svg viewBox="0 0 24 24"><path d="M15.5 14h-.79l-.28-.27C15.41 12.59 16 11.11 16 9.5 16 5.91 13.09 3 9.5 3S3 5.91 3 9.5 5.91 16 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></svg>
+        <input type="text" id="search-input" placeholder="Search memories..." oninput="debounceSearch()">
+      </div>
+      <select id="search-type" class="search-type-select" onchange="debounceSearch()">
+        <option value="hybrid">Hybrid (Text + Semantic)</option>
+        <option value="text">Text Only (FTS5)</option>
+        <option value="vector">Semantic Only (Vector)</option>
+      </select>
+    </div>
+
+    <div id="entries-container" class="entries-list">
+      <div class="loading"><div class="spinner"></div></div>
+    </div>
+
+    <div id="pagination" class="pagination"></div>
+    </div><!-- /memories-tab -->
   </div>
 
   <!-- Detail Modal -->
@@ -1985,6 +1987,7 @@ function getHTML(): string {
       activeBtn.style.color = 'var(--text-primary)';
 
       if (tab === 'sessions') loadSessions();
+      if (tab === 'memories') loadData();
     }
 
     // Sessions search
@@ -2226,8 +2229,13 @@ function getHTML(): string {
           }
 
           // observation
-          const icons = { read: '📖', write: '✏️', execute: '⚡', search: '🔍' };
-          const icon = icons[item.obsType] || '•';
+          const icons = {
+            read: '<svg viewBox="0 0 24 24" style="width:14px;height:14px;fill:var(--accent);vertical-align:-2px;"><path d="M21 5c-1.11-.35-2.33-.5-3.5-.5-1.95 0-4.05.4-5.5 1.5-1.45-1.1-3.55-1.5-5.5-1.5S2.45 4.9 1 6v14.65c0 .25.25.5.5.5.1 0 .15-.05.25-.05C3.1 20.45 5.05 20 6.5 20c1.95 0 4.05.4 5.5 1.5 1.35-.85 3.8-1.5 5.5-1.5 1.65 0 3.35.3 4.75 1.05.1.05.15.05.25.05.25 0 .5-.25.5-.5V6c-.6-.45-1.25-.75-2-1zm0 13.5c-1.1-.35-2.3-.5-3.5-.5-1.7 0-4.15.65-5.5 1.5V8c1.35-.85 3.8-1.5 5.5-1.5 1.2 0 2.4.15 3.5.5v11.5z"/></svg>',
+            write: '<svg viewBox="0 0 24 24" style="width:14px;height:14px;fill:var(--warning);vertical-align:-2px;"><path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04c.39-.39.39-1.02 0-1.41l-2.34-2.34c-.39-.39-1.02-.39-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/></svg>',
+            execute: '<svg viewBox="0 0 24 24" style="width:14px;height:14px;fill:var(--success);vertical-align:-2px;"><path d="M9.4 16.6L4.8 12l4.6-4.6L8 6l-6 6 6 6 1.4-1.4zm5.2 0l4.6-4.6-4.6-4.6L16 6l6 6-6 6-1.4-1.4z"/></svg>',
+            search: '<svg viewBox="0 0 24 24" style="width:14px;height:14px;fill:#8B5CF6;vertical-align:-2px;"><path d="M15.5 14h-.79l-.28-.27C15.41 12.59 16 11.11 16 9.5 16 5.91 13.09 3 9.5 3S3 5.91 3 9.5 5.91 16 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></svg>'
+          };
+          const icon = icons[item.obsType] || '<svg viewBox="0 0 24 24" style="width:14px;height:14px;fill:var(--text-muted);vertical-align:-2px;"><circle cx="12" cy="12" r="4"/></svg>';
           const titleText = item.compressedSummary || item.title || '';
           const subtitleText = item.subtitle ? escapeHtml(item.subtitle) : '';
           const narrativeText = item.narrative ? escapeHtml(item.narrative) : '';
@@ -2282,7 +2290,7 @@ function getHTML(): string {
       return div.innerHTML;
     }
 
-    loadData();
+    loadSessions();
   </script>
 </body>
 </html>`;
