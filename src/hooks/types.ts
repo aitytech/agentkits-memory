@@ -720,6 +720,19 @@ export const DEFAULT_CONTEXT_CONFIG: ContextConfig = {
 };
 
 /**
+ * Persistent memory settings stored in .claude/memory/settings.json
+ */
+export interface MemorySettings {
+  /** Context injection configuration */
+  context: ContextConfig;
+}
+
+/** Default memory settings */
+export const DEFAULT_MEMORY_SETTINGS: MemorySettings = {
+  context: DEFAULT_CONTEXT_CONFIG,
+};
+
+/**
  * Generate observation ID
  */
 export function generateObservationId(): string {

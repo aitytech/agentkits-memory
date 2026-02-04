@@ -34,6 +34,8 @@ import {
   computeContentHash,
   ContextConfig,
   DEFAULT_CONTEXT_CONFIG,
+  MemorySettings,
+  DEFAULT_MEMORY_SETTINGS,
   LifecycleConfig,
   DEFAULT_LIFECYCLE_CONFIG,
   LifecycleResult,
@@ -936,17 +938,50 @@ export class MemoryHookService {
     return rows.map(row => this.rowToObservation(row));
   }
 
+  // ===== Settings =====
+
+  /**
+   * Load persistent settings from .claude/memory/settings.json
+   * Returns merged with defaults (missing keys get default values)
+   */
+  loadSettings(): MemorySettings {
+    const settingsPath = path.join(path.dirname(this.dbPath), 'settings.json');
+    try {
+      if (existsSync(settingsPath)) {
+        const raw = JSON.parse(readFileSync(settingsPath, 'utf-8'));
+        return {
+          context: { ...DEFAULT_CONTEXT_CONFIG, ...(raw.context || {}) },
+        };
+      }
+    } catch {
+      // Ignore parse errors, return defaults
+    }
+    return { ...DEFAULT_MEMORY_SETTINGS, context: { ...DEFAULT_CONTEXT_CONFIG } };
+  }
+
+  /**
+   * Save settings to .claude/memory/settings.json
+   */
+  saveSettings(settings: MemorySettings): void {
+    const settingsPath = path.join(path.dirname(this.dbPath), 'settings.json');
+    writeFileSync(settingsPath, JSON.stringify(settings, null, 2));
+  }
+
   // ===== Context Generation =====
 
   /**
    * Get memory context for session start
    */
-  async getContext(project: string): Promise<MemoryContext> {
+  async getContext(project: string, configOverride?: ContextConfig): Promise<MemoryContext> {
     await this.ensureInitialized();
+
+    // Load persistent settings, allow runtime override
+    const settings = this.loadSettings();
+    const config = configOverride || settings.context;
 
     const recentObservations = await this.getRecentObservations(
       project,
-      this.config.maxContextObservations
+      config.maxObservations
     );
 
     const previousSessions = await this.getRecentSessions(
@@ -954,12 +989,12 @@ export class MemoryHookService {
       this.config.maxContextSessions
     );
 
-    const userPrompts = await this.getRecentPrompts(project, 20);
-    const sessionSummaries = await this.getRecentSummaries(project, 5);
+    const userPrompts = await this.getRecentPrompts(project, config.maxPrompts);
+    const sessionSummaries = await this.getRecentSummaries(project, config.maxSummaries);
 
-    // Generate markdown
+    // Generate markdown with settings-driven config
     const markdown = this.formatContextMarkdown(
-      recentObservations, previousSessions, userPrompts, sessionSummaries, project
+      recentObservations, previousSessions, userPrompts, sessionSummaries, project, config
     );
 
     return {

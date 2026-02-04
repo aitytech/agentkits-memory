@@ -5,7 +5,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { existsSync, rmSync, mkdirSync } from 'node:fs';
+import { existsSync, rmSync, mkdirSync, writeFileSync, readFileSync } from 'node:fs';
 import * as path from 'node:path';
 import { MemoryHookService, createHookService } from '../service.js';
 import { _setRunClaudePrintMockForTesting, resetAIEnrichmentCache } from '../ai-enrichment.js';
@@ -1015,6 +1015,174 @@ describe('MemoryHookService', () => {
     it('should produce 16-char hex string', () => {
       const hash = computeContentHash('test');
       expect(hash).toMatch(/^[0-9a-f]{16}$/);
+    });
+  });
+
+  // ===== Persistent Settings =====
+
+  describe('loadSettings / saveSettings', () => {
+    it('should return defaults when no settings file exists', async () => {
+      await service.initialize();
+      const settings = service.loadSettings();
+      expect(settings.context.showSummaries).toBe(true);
+      expect(settings.context.showPrompts).toBe(true);
+      expect(settings.context.showObservations).toBe(true);
+      expect(settings.context.showToolGuidance).toBe(true);
+      expect(settings.context.maxSummaries).toBe(3);
+      expect(settings.context.maxPrompts).toBe(10);
+      expect(settings.context.maxObservations).toBe(10);
+    });
+
+    it('should read settings from .claude/memory/settings.json', async () => {
+      await service.initialize();
+      // Write a custom settings file
+      const settingsPath = path.join(TEST_DIR, '.claude', 'memory', 'settings.json');
+      mkdirSync(path.dirname(settingsPath), { recursive: true });
+      writeFileSync(settingsPath, JSON.stringify({
+        context: { showSummaries: false, maxObservations: 25 },
+      }));
+
+      const settings = service.loadSettings();
+      expect(settings.context.showSummaries).toBe(false);
+      expect(settings.context.maxObservations).toBe(25);
+      // Missing keys get defaults
+      expect(settings.context.showPrompts).toBe(true);
+      expect(settings.context.maxSummaries).toBe(3);
+    });
+
+    it('should return defaults on corrupted settings file', async () => {
+      await service.initialize();
+      const settingsPath = path.join(TEST_DIR, '.claude', 'memory', 'settings.json');
+      mkdirSync(path.dirname(settingsPath), { recursive: true });
+      writeFileSync(settingsPath, '{ invalid json');
+
+      const settings = service.loadSettings();
+      expect(settings.context.showSummaries).toBe(true);
+      expect(settings.context.maxObservations).toBe(10);
+    });
+
+    it('should save settings to disk', async () => {
+      await service.initialize();
+      const customSettings = {
+        context: {
+          showSummaries: false,
+          showPrompts: true,
+          showObservations: true,
+          showToolGuidance: false,
+          maxSummaries: 5,
+          maxPrompts: 20,
+          maxObservations: 30,
+        },
+      };
+      service.saveSettings(customSettings);
+
+      // Verify file contents
+      const settingsPath = path.join(TEST_DIR, '.claude', 'memory', 'settings.json');
+      const saved = JSON.parse(readFileSync(settingsPath, 'utf-8'));
+      expect(saved.context.showSummaries).toBe(false);
+      expect(saved.context.maxObservations).toBe(30);
+    });
+
+    it('should round-trip save and load', async () => {
+      await service.initialize();
+      const original = {
+        context: {
+          showSummaries: false,
+          showPrompts: false,
+          showObservations: true,
+          showToolGuidance: true,
+          maxSummaries: 1,
+          maxPrompts: 5,
+          maxObservations: 15,
+        },
+      };
+      service.saveSettings(original);
+      const loaded = service.loadSettings();
+      expect(loaded).toEqual(original);
+    });
+  });
+
+  describe('getContext with settings', () => {
+    it('should use settings from disk', async () => {
+      await service.initSession('session-1', 'test-project');
+      await service.storeObservation(
+        'session-1', 'test-project', 'Read', { file_path: 'a.ts' }, {}, TEST_DIR
+      );
+
+      // Save settings to disable summaries
+      service.saveSettings({
+        context: {
+          showSummaries: false,
+          showPrompts: true,
+          showObservations: true,
+          showToolGuidance: false,
+          maxSummaries: 3,
+          maxPrompts: 10,
+          maxObservations: 10,
+        },
+      });
+
+      const context = await service.getContext('test-project');
+      // Tool guidance should be absent when showToolGuidance=false
+      expect(context.markdown).not.toContain('Memory tools available');
+    });
+
+    it('should respect configOverride over disk settings', async () => {
+      await service.initSession('session-1', 'test-project');
+      await service.storeObservation(
+        'session-1', 'test-project', 'Read', { file_path: 'a.ts' }, {}, TEST_DIR
+      );
+
+      // Disk settings: guidance enabled
+      service.saveSettings({
+        context: {
+          showSummaries: true,
+          showPrompts: true,
+          showObservations: true,
+          showToolGuidance: true,
+          maxSummaries: 3,
+          maxPrompts: 10,
+          maxObservations: 10,
+        },
+      });
+
+      // Override: disable guidance
+      const context = await service.getContext('test-project', {
+        showSummaries: true,
+        showPrompts: true,
+        showObservations: true,
+        showToolGuidance: false,
+        maxSummaries: 3,
+        maxPrompts: 10,
+        maxObservations: 10,
+      });
+      expect(context.markdown).not.toContain('Memory tools available');
+    });
+
+    it('should limit observations by maxObservations setting', async () => {
+      await service.initSession('session-1', 'test-project');
+      // Store 5 observations
+      for (let i = 0; i < 5; i++) {
+        await service.storeObservation(
+          'session-1', 'test-project', 'Read', { file_path: `file${i}.ts` }, {}, TEST_DIR
+        );
+      }
+
+      // Set maxObservations=2
+      service.saveSettings({
+        context: {
+          showSummaries: true,
+          showPrompts: true,
+          showObservations: true,
+          showToolGuidance: true,
+          maxSummaries: 3,
+          maxPrompts: 10,
+          maxObservations: 2,
+        },
+      });
+
+      const context = await service.getContext('test-project');
+      expect(context.recentObservations.length).toBe(2);
     });
   });
 

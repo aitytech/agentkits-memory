@@ -22,7 +22,7 @@
  * @module @agentkits/memory/hooks/cli
  */
 
-import { parseHookInput, formatResponse, STANDARD_RESPONSE, HookResult } from './types.js';
+import { parseHookInput, formatResponse, STANDARD_RESPONSE, HookResult, DEFAULT_MEMORY_SETTINGS, DEFAULT_CONTEXT_CONFIG } from './types.js';
 import { createContextHook } from './context.js';
 import { createSessionInitHook } from './session-init.js';
 import { createObservationHook } from './observation.js';
@@ -72,7 +72,7 @@ async function main(): Promise<void> {
 
     if (!event) {
       console.error('Usage: agentkits-memory-hook <event>');
-      console.error('Events: context, session-init, observation, summarize, user-message, enrich, enrich-summary, embed-session, enrich-session, compress-session, lifecycle, lifecycle-stats, export, import');
+      console.error('Events: context, session-init, observation, summarize, user-message, enrich, enrich-summary, embed-session, enrich-session, compress-session, lifecycle, lifecycle-stats, export, import, settings');
       process.exit(1);
     }
 
@@ -247,6 +247,48 @@ async function main(): Promise<void> {
         const data = JSON.parse(readFileSync(inputPath, 'utf-8'));
         const result = await svc.importFromJSON(data);
         console.log(JSON.stringify(result, null, 2));
+      } finally {
+        await svc.shutdown();
+      }
+      process.exit(0);
+    }
+
+    // Handle 'settings' command
+    // Usage: settings <cwd> [key=value ...] [--reset]
+    if (event === 'settings') {
+      const cwdArg = process.argv[3] || process.cwd();
+      const svc = new MemoryHookService(cwdArg);
+      await svc.initialize();
+      try {
+        const settingsArgs = process.argv.slice(4);
+
+        if (settingsArgs.includes('--reset')) {
+          svc.saveSettings({ ...DEFAULT_MEMORY_SETTINGS, context: { ...DEFAULT_CONTEXT_CONFIG } });
+          console.log(JSON.stringify(DEFAULT_MEMORY_SETTINGS, null, 2));
+        } else if (settingsArgs.length === 0) {
+          console.log(JSON.stringify(svc.loadSettings(), null, 2));
+        } else {
+          const settings = svc.loadSettings();
+          for (const arg of settingsArgs) {
+            const eqIndex = arg.indexOf('=');
+            if (eqIndex <= 0) continue;
+            const key = arg.slice(0, eqIndex);
+            const value = arg.slice(eqIndex + 1);
+            if (key in settings.context) {
+              const contextKey = key as keyof typeof settings.context;
+              const current = settings.context[contextKey];
+              if (typeof current === 'boolean') {
+                // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                (settings.context as any)[key] = value === 'true';
+              } else if (typeof current === 'number') {
+                // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                (settings.context as any)[key] = parseInt(value, 10);
+              }
+            }
+          }
+          svc.saveSettings(settings);
+          console.log(JSON.stringify(settings, null, 2));
+        }
       } finally {
         await svc.shutdown();
       }

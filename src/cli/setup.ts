@@ -303,6 +303,85 @@ function configureMcp(
   return { configured, skipped };
 }
 
+/**
+ * Install memory skills to .claude/skills/
+ * Copies SKILL.md files from package to project's .claude/skills/ directory
+ */
+function installSkills(
+  projectDir: string,
+  force: boolean,
+  asJson: boolean
+): { installed: string[]; skipped: string[] } {
+  const installed: string[] = [];
+  const skipped: string[] = [];
+
+  // Resolve package root: setup.ts is at dist/cli/setup.js → package root is ../../
+  const packageRoot = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..', '..');
+  const sourceSkillsDir = path.join(packageRoot, 'skills');
+
+  if (!fs.existsSync(sourceSkillsDir)) {
+    return { installed, skipped };
+  }
+
+  let skillDirs: fs.Dirent[];
+  try {
+    skillDirs = fs.readdirSync(sourceSkillsDir, { withFileTypes: true })
+      .filter(d => d.isDirectory());
+  } catch {
+    return { installed, skipped };
+  }
+
+  for (const skillDir of skillDirs) {
+    const sourcePath = path.join(sourceSkillsDir, skillDir.name, 'SKILL.md');
+    const targetDir = path.join(projectDir, '.claude', 'skills', skillDir.name);
+    const targetPath = path.join(targetDir, 'SKILL.md');
+
+    if (!fs.existsSync(sourcePath)) continue;
+
+    if (fs.existsSync(targetPath) && !force) {
+      skipped.push(skillDir.name);
+      continue;
+    }
+
+    if (!fs.existsSync(targetDir)) {
+      fs.mkdirSync(targetDir, { recursive: true });
+    }
+    fs.copyFileSync(sourcePath, targetPath);
+    installed.push(skillDir.name);
+  }
+
+  if (!asJson && installed.length > 0) {
+    console.log('\n🎯 Skills installed:');
+    for (const skill of installed) {
+      console.log(`   ✓ ${skill} (.claude/skills/${skill}/SKILL.md)`);
+    }
+  }
+
+  return { installed, skipped };
+}
+
+/**
+ * Create default memory settings file if not exists
+ */
+function createDefaultSettings(memoryDir: string, force: boolean): boolean {
+  const settingsPath = path.join(memoryDir, 'settings.json');
+  if (fs.existsSync(settingsPath) && !force) return false;
+
+  const defaultSettings = {
+    context: {
+      showSummaries: true,
+      showPrompts: true,
+      showObservations: true,
+      showToolGuidance: true,
+      maxSummaries: 3,
+      maxPrompts: 10,
+      maxObservations: 10,
+    },
+  };
+  fs.writeFileSync(settingsPath, JSON.stringify(defaultSettings, null, 2));
+  return true;
+}
+
 async function downloadModel(cacheDir: string, asJson: boolean): Promise<boolean> {
   if (!asJson) {
     console.log('\n📥 Downloading embedding model...');
@@ -415,6 +494,15 @@ async function main() {
     // Write settings
     fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2));
 
+    // Install skills
+    const skillsResult = installSkills(projectDir, force, asJson);
+
+    // Create default memory settings
+    const settingsCreated = createDefaultSettings(memoryDir, force);
+    if (!asJson && settingsCreated) {
+      console.log('\n⚙️  Default memory settings created');
+    }
+
     // Download embedding model
     let modelDownloaded = false;
     if (!skipModel) {
@@ -428,6 +516,7 @@ async function main() {
       hooksAdded: hooksResult.added,
       hooksSkipped: hooksResult.skipped,
       hooksManualRequired: hooksResult.manualRequired,
+      skillsInstalled: skillsResult.installed,
       mcpConfigured: mcpResult.configured,
       modelDownloaded,
       message: 'Memory setup complete',
@@ -446,6 +535,11 @@ async function main() {
       }
       if (hooksResult.skipped.length > 0) {
         console.log(`   Skipped: ${hooksResult.skipped.join(', ')}`);
+      }
+
+      // Show skills status
+      if (skillsResult.installed.length > 0) {
+        console.log(`\n🎯 Skills: ${skillsResult.installed.join(', ')}`);
       }
 
       // Show manual action required
