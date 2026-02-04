@@ -1,9 +1,9 @@
 ---
-name: recall
+name: memory
 description: Use when you need to recall past work, previous decisions, error solutions, or project history. Activates the 3-layer memory search workflow for token-efficient retrieval.
 ---
 
-# Memory Recall Skill
+# AgentKits Memory Skill
 
 ## When to Activate
 

@@ -3,13 +3,15 @@
  * AgentKits Memory Setup CLI
  *
  * Sets up memory hooks, MCP server, and downloads embedding model.
- * Supports multiple AI tools: Claude Code, Cursor, Windsurf, etc.
+ * Supports multiple AI tools: Claude Code, Cursor, Windsurf, Cline, OpenCode.
  *
  * Usage:
  *   npx agentkits-memory-setup [options]
  *
  * Options:
  *   --project-dir=X   Project directory (default: cwd)
+ *   --platform=X      Target platform(s): claude-code, cursor, windsurf, cline, opencode, all
+ *                     Default: auto-detect, fallback to claude-code
  *   --force           Overwrite existing configuration
  *   --skip-model      Skip embedding model download
  *   --skip-mcp        Skip MCP server configuration
@@ -22,6 +24,8 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { LocalEmbeddingsService } from '../embeddings/local-embeddings.js';
+import { type PlatformDefinition, type PlatformId, PLATFORMS, resolvePlatforms } from './platforms.js';
+import { installRulesFile } from './rules-generator.js';
 
 const args = process.argv.slice(2);
 
@@ -236,84 +240,78 @@ function mergeHooks(
 }
 
 /**
- * Configure MCP server for different AI tools
- * Creates/updates config files for: Claude Code, Cursor, Windsurf, etc.
+ * Configure MCP server for a specific platform.
+ * Handles two formats:
+ * - 'embedded': mcpServers key inside an existing settings file (Claude Code)
+ * - 'standalone': dedicated mcp.json file with { mcpServers: { ... } }
  */
-function configureMcp(
+function configureMcpForPlatform(
   projectDir: string,
-  claudeSettings: ClaudeSettings,
+  platform: PlatformDefinition,
   force: boolean,
-  asJson: boolean
-): { configured: string[]; skipped: string[] } {
-  const configured: string[] = [];
-  const skipped: string[] = [];
+  asJson: boolean,
+  claudeSettings?: ClaudeSettings,
+): { configured: boolean; path: string } {
+  const mcpPath = path.join(projectDir, platform.mcpConfigPath);
 
-  // 1. Add to Claude Code settings.json (mcpServers key)
-  // Always merge with existing servers, never overwrite
-  if (!claudeSettings.mcpServers) {
-    claudeSettings.mcpServers = {};
+  if (platform.mcpConfigFormat === 'embedded' && claudeSettings) {
+    // Claude Code: mcpServers key inside settings.json
+    if (!claudeSettings.mcpServers) {
+      claudeSettings.mcpServers = {};
+    }
+    if (!claudeSettings.mcpServers.memory || force) {
+      claudeSettings.mcpServers.memory = MEMORY_MCP_SERVER;
+      return { configured: true, path: mcpPath };
+    }
+    return { configured: false, path: mcpPath };
   }
 
-  if (!claudeSettings.mcpServers.memory || force) {
-    claudeSettings.mcpServers.memory = MEMORY_MCP_SERVER;
-    configured.push('Claude Code (.claude/settings.json)');
-  } else {
-    skipped.push('Claude Code (already configured)');
-  }
-
-  // 2. Create/update root .mcp.json for other tools (Cursor, Windsurf, Claude Code, etc.)
-  // Always merge with existing servers, never overwrite
-  const mcpJsonPath = path.join(projectDir, '.mcp.json');
+  // Standalone mcp.json
   try {
     let existing: McpConfig = { mcpServers: {} };
 
-    // Load existing config if present
-    if (fs.existsSync(mcpJsonPath)) {
+    if (fs.existsSync(mcpPath)) {
       try {
-        existing = JSON.parse(fs.readFileSync(mcpJsonPath, 'utf-8')) as McpConfig;
+        existing = JSON.parse(fs.readFileSync(mcpPath, 'utf-8')) as McpConfig;
         existing.mcpServers = existing.mcpServers || {};
       } catch {
-        // If parse fails, start fresh but warn
         if (!asJson) {
-          console.warn('   ⚠ .mcp.json parse error, creating new config');
+          console.warn(`   ⚠ ${platform.mcpConfigPath} parse error, creating new config`);
         }
         existing = { mcpServers: {} };
       }
     }
 
-    // Add or update memory server
     if (!existing.mcpServers.memory || force) {
+      // Ensure parent directory exists
+      const mcpDir = path.dirname(mcpPath);
+      if (!fs.existsSync(mcpDir)) {
+        fs.mkdirSync(mcpDir, { recursive: true });
+      }
       existing.mcpServers.memory = MEMORY_MCP_SERVER;
-      fs.writeFileSync(mcpJsonPath, JSON.stringify(existing, null, 2));
-      configured.push('Universal (.mcp.json)');
-    } else {
-      skipped.push('.mcp.json (already configured)');
+      fs.writeFileSync(mcpPath, JSON.stringify(existing, null, 2));
+      return { configured: true, path: mcpPath };
     }
-  } catch (error) {
-    skipped.push(`.mcp.json (error: ${error instanceof Error ? error.message : 'unknown'})`);
+    return { configured: false, path: mcpPath };
+  } catch {
+    return { configured: false, path: mcpPath };
   }
-
-  if (!asJson && configured.length > 0) {
-    console.log('\n🔌 MCP Server configured for:');
-    for (const tool of configured) {
-      console.log(`   ✓ ${tool}`);
-    }
-  }
-
-  return { configured, skipped };
 }
 
 /**
- * Install memory skills to .claude/skills/
- * Copies SKILL.md files from package to project's .claude/skills/ directory
+ * Install memory skills to a platform's skills directory.
+ * Copies SKILL.md files from package to project's skills directory.
  */
 function installSkills(
   projectDir: string,
+  platform: PlatformDefinition,
   force: boolean,
   asJson: boolean
 ): { installed: string[]; skipped: string[] } {
   const installed: string[] = [];
   const skipped: string[] = [];
+
+  if (!platform.skillsDir) return { installed, skipped };
 
   // Resolve package root: setup.ts is at dist/cli/setup.js → package root is ../../
   const packageRoot = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..', '..');
@@ -333,7 +331,7 @@ function installSkills(
 
   for (const skillDir of skillDirs) {
     const sourcePath = path.join(sourceSkillsDir, skillDir.name, 'SKILL.md');
-    const targetDir = path.join(projectDir, '.claude', 'skills', skillDir.name);
+    const targetDir = path.join(projectDir, platform.skillsDir, skillDir.name);
     const targetPath = path.join(targetDir, 'SKILL.md');
 
     if (!fs.existsSync(sourcePath)) continue;
@@ -353,7 +351,7 @@ function installSkills(
   if (!asJson && installed.length > 0) {
     console.log('\n🎯 Skills installed:');
     for (const skill of installed) {
-      console.log(`   ✓ ${skill} (.claude/skills/${skill}/SKILL.md)`);
+      console.log(`   ✓ ${skill} (${platform.skillsDir}/${skill}/SKILL.md)`);
     }
   }
 
@@ -450,6 +448,7 @@ async function main() {
   const skipModel = !!options['skip-model'];
   const skipMcp = !!options['skip-mcp'];
   const showHooks = !!options['show-hooks'];
+  const platformArg = options.platform as string | undefined;
 
   // Just show hooks config and exit
   if (showHooks) {
@@ -457,16 +456,22 @@ async function main() {
     return;
   }
 
+  // Resolve target platforms
+  const targetPlatforms = resolvePlatforms(platformArg, projectDir);
+
+  // Memory data always stored under .claude/memory (single source of truth)
   const claudeDir = path.join(projectDir, '.claude');
   const settingsPath = path.join(claudeDir, 'settings.json');
   const memoryDir = path.join(claudeDir, 'memory');
 
   try {
     if (!asJson) {
+      const platformNames = targetPlatforms.map(id => PLATFORMS[id].name).join(', ');
       console.log('\n🧠 AgentKits Memory Setup\n');
+      console.log(`   Platforms: ${platformNames}`);
     }
 
-    // Create directories
+    // Always create memory directory (single source of truth)
     if (!fs.existsSync(claudeDir)) {
       fs.mkdirSync(claudeDir, { recursive: true });
     }
@@ -474,28 +479,66 @@ async function main() {
       fs.mkdirSync(memoryDir, { recursive: true });
     }
 
-    // Load or create settings
-    let settings: ClaudeSettings = {};
+    // Track results across all platforms
+    const mcpConfigured: string[] = [];
+    const mcpSkipped: string[] = [];
+    const rulesInstalled: string[] = [];
+    const rulesSkipped: string[] = [];
+    let hooksResult: MergeResult = { merged: {}, added: [], skipped: [], manualRequired: [] };
+    let skillsResult = { installed: [] as string[], skipped: [] as string[] };
+
+    // Load Claude settings (needed for embedded MCP + hooks)
+    let claudeSettings: ClaudeSettings = {};
     if (fs.existsSync(settingsPath)) {
       const content = fs.readFileSync(settingsPath, 'utf-8');
-      settings = JSON.parse(content);
+      claudeSettings = JSON.parse(content);
     }
 
-    // Merge hooks
-    const hooksResult = mergeHooks(settings.hooks, MEMORY_HOOKS, force);
-    settings.hooks = hooksResult.merged;
+    // Process each platform
+    for (const platformId of targetPlatforms) {
+      const platform = PLATFORMS[platformId];
 
-    // Configure MCP server
-    let mcpResult = { configured: [] as string[], skipped: [] as string[] };
-    if (!skipMcp) {
-      mcpResult = configureMcp(projectDir, settings, force, asJson);
+      // 1. Configure MCP
+      if (!skipMcp) {
+        const mcpResult = configureMcpForPlatform(
+          projectDir, platform, force, asJson,
+          platformId === 'claude-code' ? claudeSettings : undefined,
+        );
+        if (mcpResult.configured) {
+          mcpConfigured.push(`${platform.name} (${platform.mcpConfigPath})`);
+        } else {
+          mcpSkipped.push(`${platform.name} (already configured)`);
+        }
+      }
+
+      // 2. Install hooks (Claude Code only for now; OpenCode in Phase B)
+      if (platformId === 'claude-code') {
+        hooksResult = mergeHooks(claudeSettings.hooks, MEMORY_HOOKS, force);
+        claudeSettings.hooks = hooksResult.merged;
+      }
+
+      // 3. Install skills (platforms that support them)
+      if (platform.skillsDir) {
+        const result = installSkills(projectDir, platform, force, asJson);
+        skillsResult.installed.push(...result.installed);
+        skillsResult.skipped.push(...result.skipped);
+      }
+
+      // 4. Install rules file (platforms that support them)
+      if (platform.rulesFile) {
+        const result = installRulesFile(projectDir, platform.rulesFile, force, asJson);
+        if (result.installed) {
+          rulesInstalled.push(`${platform.rulesFile} (${result.action})`);
+        } else {
+          rulesSkipped.push(`${platform.rulesFile} (already configured)`);
+        }
+      }
     }
 
-    // Write settings
-    fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2));
-
-    // Install skills
-    const skillsResult = installSkills(projectDir, force, asJson);
+    // Write Claude settings (hooks + embedded MCP)
+    if (targetPlatforms.includes('claude-code')) {
+      fs.writeFileSync(settingsPath, JSON.stringify(claudeSettings, null, 2));
+    }
 
     // Create default memory settings
     const settingsCreated = createDefaultSettings(memoryDir, force);
@@ -511,13 +554,15 @@ async function main() {
 
     const result = {
       success: true,
+      platforms: targetPlatforms,
       settingsPath,
       memoryDir,
       hooksAdded: hooksResult.added,
       hooksSkipped: hooksResult.skipped,
       hooksManualRequired: hooksResult.manualRequired,
       skillsInstalled: skillsResult.installed,
-      mcpConfigured: mcpResult.configured,
+      mcpConfigured,
+      rulesInstalled,
       modelDownloaded,
       message: 'Memory setup complete',
     };
@@ -525,11 +570,18 @@ async function main() {
     if (asJson) {
       console.log(JSON.stringify(result, null, 2));
     } else {
-      console.log('✅ Setup Complete\n');
-      console.log(`📁 Settings: ${settingsPath}`);
+      console.log('\n✅ Setup Complete\n');
       console.log(`📁 Memory:   ${memoryDir}`);
 
-      // Show hooks status
+      // Show MCP status
+      if (mcpConfigured.length > 0) {
+        console.log('\n🔌 MCP Server configured for:');
+        for (const entry of mcpConfigured) {
+          console.log(`   ✓ ${entry}`);
+        }
+      }
+
+      // Show hooks status (Claude Code only)
       if (hooksResult.added.length > 0) {
         console.log(`\n📋 Hooks added: ${hooksResult.added.join(', ')}`);
       }
@@ -540,6 +592,14 @@ async function main() {
       // Show skills status
       if (skillsResult.installed.length > 0) {
         console.log(`\n🎯 Skills: ${skillsResult.installed.join(', ')}`);
+      }
+
+      // Show rules files status
+      if (rulesInstalled.length > 0) {
+        console.log('\n📝 Rules files:');
+        for (const entry of rulesInstalled) {
+          console.log(`   ✓ ${entry}`);
+        }
       }
 
       // Show manual action required
@@ -562,32 +622,34 @@ async function main() {
       console.log('📋 Show hooks config: npx agentkits-memory-setup --show-hooks\n');
 
       // Show manual hook instructions if some hooks couldn't be added
-      const allHookEvents = Object.keys(MEMORY_HOOKS);
-      const addedEvents = hooksResult.added.map((h) => h.replace(/ \(.*\)$/, ''));
-      const missingEvents = allHookEvents.filter(
-        (e) => !addedEvents.includes(e) && !hooksResult.skipped.some((s) => s.startsWith(e))
-      );
+      if (targetPlatforms.includes('claude-code')) {
+        const allHookEvents = Object.keys(MEMORY_HOOKS);
+        const addedEvents = hooksResult.added.map((h) => h.replace(/ \(.*\)$/, ''));
+        const missingEvents = allHookEvents.filter(
+          (e) => !addedEvents.includes(e) && !hooksResult.skipped.some((s) => s.startsWith(e))
+        );
 
-      if (missingEvents.length > 0) {
-        console.log('━'.repeat(60));
-        console.log('📝 MANUAL SETUP REQUIRED\n');
-        console.log(`Some hooks could not be auto-configured.`);
-        console.log(`Missing: ${missingEvents.join(', ')}\n`);
-        console.log(`To add manually:`);
-        console.log(`1. Open: ${settingsPath}`);
-        console.log(`2. Add/merge the following into the "hooks" section:\n`);
+        if (missingEvents.length > 0) {
+          console.log('━'.repeat(60));
+          console.log('📝 MANUAL SETUP REQUIRED\n');
+          console.log(`Some hooks could not be auto-configured.`);
+          console.log(`Missing: ${missingEvents.join(', ')}\n`);
+          console.log(`To add manually:`);
+          console.log(`1. Open: ${settingsPath}`);
+          console.log(`2. Add/merge the following into the "hooks" section:\n`);
 
-        // Generate copy-paste JSON for missing hooks only
-        const missingHooksJson: Record<string, HookEntry[]> = {};
-        for (const event of missingEvents) {
-          const hookConfig = MEMORY_HOOKS[event];
-          if (hookConfig) {
-            missingHooksJson[event] = hookConfig;
+          // Generate copy-paste JSON for missing hooks only
+          const missingHooksJson: Record<string, HookEntry[]> = {};
+          for (const event of missingEvents) {
+            const hookConfig = MEMORY_HOOKS[event];
+            if (hookConfig) {
+              missingHooksJson[event] = hookConfig;
+            }
           }
-        }
 
-        console.log(JSON.stringify(missingHooksJson, null, 2));
-        console.log('\n━'.repeat(60));
+          console.log(JSON.stringify(missingHooksJson, null, 2));
+          console.log('\n━'.repeat(60));
+        }
       }
     }
   } catch (error) {

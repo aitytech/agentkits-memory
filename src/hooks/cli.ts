@@ -22,7 +22,8 @@
  * @module @agentkits/memory/hooks/cli
  */
 
-import { parseHookInput, formatResponse, STANDARD_RESPONSE, HookResult, DEFAULT_MEMORY_SETTINGS, DEFAULT_CONTEXT_CONFIG } from './types.js';
+import { STANDARD_RESPONSE, HookResult, NormalizedHookInput, DEFAULT_MEMORY_SETTINGS, DEFAULT_CONTEXT_CONFIG } from './types.js';
+import { resolveAdapter } from './adapters/index.js';
 import { createContextHook } from './context.js';
 import { createSessionInitHook } from './session-init.js';
 import { createObservationHook } from './observation.js';
@@ -319,12 +320,13 @@ async function main(): Promise<void> {
     // Read stdin
     const stdin = await readStdin();
 
-    // Parse input
-    const input = parseHookInput(stdin);
+    // Resolve platform adapter and parse input
+    const adapter = resolveAdapter();
+    const input = adapter.parseInput(stdin);
 
     // Select and execute handler
     let result: HookResult | undefined;
-    let hook: { execute(input: ReturnType<typeof parseHookInput>): Promise<HookResult>; shutdown(): Promise<void> } | null = null;
+    let hook: { execute(input: NormalizedHookInput): Promise<HookResult>; shutdown(): Promise<void> } | null = null;
 
     switch (event) {
       case 'context':
@@ -360,8 +362,8 @@ async function main(): Promise<void> {
       try { await hook!.shutdown(); } catch { /* ignore shutdown errors */ }
     }
 
-    // Output response
-    console.log(formatResponse(result));
+    // Output response using platform adapter
+    console.log(adapter.formatOutput(result));
 
   } catch (error) {
     // Log error to stderr (visible in verbose mode with exit 0)

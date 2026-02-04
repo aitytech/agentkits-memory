@@ -13,9 +13,9 @@
   <img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License">
   <img src="https://img.shields.io/badge/Claude_Code-Compatible-blueviolet" alt="Claude Code">
   <img src="https://img.shields.io/badge/Cursor-Compatible-blue" alt="Cursor">
-  <img src="https://img.shields.io/badge/Copilot-Compatible-green" alt="Copilot">
   <img src="https://img.shields.io/badge/Windsurf-Compatible-cyan" alt="Windsurf">
   <img src="https://img.shields.io/badge/Cline-Compatible-orange" alt="Cline">
+  <img src="https://img.shields.io/badge/OpenCode-Compatible-green" alt="OpenCode">
 </p>
 
 <p align="center">
@@ -33,9 +33,10 @@
 
 <p align="center">
   <a href="#quick-start">Quick Start</a> •
-  <a href="#web-viewer">Web Viewer</a> •
   <a href="#features">Features</a> •
-  <a href="#agentkits-ecosystem">Ecosystem</a> •
+  <a href="#multi-platform-support">Platforms</a> •
+  <a href="#cli-commands">CLI</a> •
+  <a href="#web-viewer">Web Viewer</a> •
   <a href="https://agentkits.net">agentkits.net</a>
 </p>
 
@@ -48,11 +49,15 @@
 | **100% Local** | All data stays on your machine. No cloud, no API keys, no accounts |
 | **Blazing Fast** | Native SQLite (better-sqlite3) = instant queries, zero latency |
 | **Zero Config** | Works out of the box. No database setup required |
-| **Cross-Platform** | Windows, macOS, Linux - same code, same speed |
-| **MCP Server** | `memory_save`, `memory_search`, `memory_recall`, `memory_list`, `memory_status` |
-| **Web Viewer** | Browser UI to view, add, edit, delete memories |
-| **Vector Search** | Optional HNSW semantic similarity (no external service) |
-| **Auto-Capture** | Hooks for session context, tool usage, summaries |
+| **Multi-Platform** | Claude Code, Cursor, Windsurf, Cline, OpenCode — one setup command |
+| **MCP Server** | 9 tools: save, search, timeline, details, recall, list, update, delete, status |
+| **Auto-Capture** | Hooks capture session context, tool usage, summaries automatically |
+| **AI Enrichment** | Background workers enrich observations with AI-generated summaries |
+| **Vector Search** | HNSW semantic similarity with multilingual embeddings (100+ languages) |
+| **Web Viewer** | Browser UI to view, search, add, edit, delete memories |
+| **3-Layer Search** | Progressive disclosure saves ~87% tokens vs fetching everything |
+| **Lifecycle Mgmt** | Auto-compress, archive, and clean up old sessions |
+| **Export/Import** | Backup and restore memories as JSON |
 
 ---
 
@@ -94,40 +99,58 @@ Generate and manage vector embeddings for semantic search.
 
 ## Quick Start
 
-### 1. Install
+### 1. Setup (Recommended)
 
 ```bash
-npm install @aitytech/agentkits-memory
+npx agentkits-memory-setup
 ```
 
-### 2. Configure MCP Server
+This auto-detects your platform and configures everything: MCP server, hooks (Claude Code/OpenCode), rules files (Cursor/Windsurf/Cline), and downloads the embedding model.
 
-Add to your `.mcp.json` (or `.claude/.mcp.json`):
+**Target a specific platform:**
+
+```bash
+npx agentkits-memory-setup --platform=cursor
+npx agentkits-memory-setup --platform=windsurf,cline
+npx agentkits-memory-setup --platform=all
+```
+
+### 2. Manual MCP Configuration (Alternative)
+
+If you prefer manual setup, add to your MCP config:
 
 ```json
 {
   "mcpServers": {
     "memory": {
       "command": "npx",
-      "args": ["agentkits-memory-server"]
+      "args": ["-y", "agentkits-memory-server"]
     }
   }
 }
 ```
 
-### 3. Use Memory Tools
+Config file locations:
+- **Claude Code**: `.claude/settings.json` (embedded in `mcpServers` key)
+- **Cursor**: `.cursor/mcp.json`
+- **Windsurf**: `.windsurf/mcp.json`
+- **Cline / OpenCode**: `.mcp.json` (project root)
+
+### 3. MCP Tools
 
 Once configured, your AI assistant can use these tools:
 
 | Tool | Description |
 |------|-------------|
+| `memory_status` | Check memory system status (call first!) |
 | `memory_save` | Save decisions, patterns, errors, or context |
-| `memory_search` | **[Step 1]** Search memories - returns lightweight index |
-| `memory_timeline` | **[Step 2]** Get context around a memory |
+| `memory_search` | **[Step 1]** Search index — lightweight IDs + titles (~50 tokens/result) |
+| `memory_timeline` | **[Step 2]** Get temporal context around a memory |
 | `memory_details` | **[Step 3]** Get full content for specific IDs |
-| `memory_recall` | Quick recall - returns full content (legacy) |
+| `memory_recall` | Quick topic overview — grouped summary |
 | `memory_list` | List recent memories |
-| `memory_status` | Check memory system status |
+| `memory_update` | Update existing memory content or tags |
+| `memory_delete` | Remove outdated memories |
 
 ---
 
@@ -186,20 +209,38 @@ memory_details({ ids: ["abc"] })
 ## CLI Commands
 
 ```bash
+# One-command setup (auto-detects platform)
+npx agentkits-memory-setup
+npx agentkits-memory-setup --platform=cursor      # specific platform
+npx agentkits-memory-setup --platform=all          # all platforms
+npx agentkits-memory-setup --force                 # re-install/update
+
 # Start MCP server
 npx agentkits-memory-server
 
-# Start web viewer (port 1905)
+# Web viewer (port 1905)
 npx agentkits-memory-web
 
-# View stored memories (terminal)
+# Terminal viewer
 npx agentkits-memory-viewer
+npx agentkits-memory-viewer --stats                # database statistics
+npx agentkits-memory-viewer --json                 # JSON output
 
-# Save memory from CLI
+# Save from CLI
 npx agentkits-memory-save "Use JWT with refresh tokens" --category pattern --tags auth,security
 
-# Setup hooks for auto-capture
-npx agentkits-memory-setup
+# Settings
+npx agentkits-memory-hook settings .               # view current settings
+npx agentkits-memory-hook settings . --reset       # reset to defaults
+npx agentkits-memory-hook settings . aiProvider.provider=openai aiProvider.apiKey=sk-...
+
+# Export / Import
+npx agentkits-memory-hook export . my-project ./backup.json
+npx agentkits-memory-hook import . ./backup.json
+
+# Lifecycle management
+npx agentkits-memory-hook lifecycle . --compress-days=7 --archive-days=30
+npx agentkits-memory-hook lifecycle-stats .
 ```
 
 ---
@@ -239,24 +280,121 @@ const entry = await memory.getByKey('patterns', 'auth-pattern');
 
 ## Auto-Capture Hooks
 
-The package includes hooks for automatically capturing AI coding sessions:
+Hooks automatically capture your AI coding sessions (Claude Code and OpenCode only):
 
 | Hook | Trigger | Action |
 |------|---------|--------|
-| `context` | Session Start | Injects previous session context |
-| `session-init` | First User Prompt | Initializes session record |
-| `observation` | After Tool Use | Captures tool usage |
-| `summarize` | Session End | Generates session summary |
+| `context` | Session Start | Injects previous session context + memory status |
+| `session-init` | User Prompt | Initializes/resumes session, records prompts |
+| `observation` | After Tool Use | Captures tool usage with intent detection |
+| `summarize` | Session End | Generates structured session summary |
+| `user-message` | Session Start | Displays memory status to user (stderr) |
 
 Setup hooks:
 ```bash
 npx agentkits-memory-setup
 ```
 
-Or manually copy `hooks.json` to your project:
+**What gets captured automatically:**
+- File reads/writes with paths
+- Code changes as structured diffs (before → after)
+- Developer intent (bugfix, feature, refactor, investigation, etc.)
+- Session summaries with decisions, errors, and next steps
+- Multi-prompt tracking within sessions
+
+---
+
+## Multi-Platform Support
+
+| Platform | MCP | Hooks | Rules File | Setup |
+|----------|-----|-------|------------|-------|
+| **Claude Code** | `.claude/settings.json` | ✅ Full | CLAUDE.md (skill) | `--platform=claude-code` |
+| **Cursor** | `.cursor/mcp.json` | — | `.cursorrules` | `--platform=cursor` |
+| **Windsurf** | `.windsurf/mcp.json` | — | `.windsurfrules` | `--platform=windsurf` |
+| **Cline** | `.mcp.json` | — | `.clinerules` | `--platform=cline` |
+| **OpenCode** | `.mcp.json` | ✅ Full | — | `--platform=opencode` |
+
+- **MCP Server** works with all platforms (memory tools via MCP protocol)
+- **Hooks** provide auto-capture on Claude Code and OpenCode
+- **Rules files** teach Cursor/Windsurf/Cline the memory workflow
+- **Memory data** always stored in `.claude/memory/` (single source of truth)
+
+---
+
+## Background Workers
+
+After each session, background workers process queued tasks:
+
+| Worker | Task | Description |
+|--------|------|-------------|
+| `embed-session` | Embeddings | Generate vector embeddings for semantic search |
+| `enrich-session` | AI Enrichment | Enrich observations with AI-generated summaries, facts, concepts |
+| `compress-session` | Compression | Compress old observations (10:1–25:1) and generate session digests (20:1–100:1) |
+
+Workers run automatically after session end. Each worker:
+- Processes up to 200 items per run
+- Uses lock files to prevent concurrent execution
+- Auto-terminates after 5 minutes (prevents zombies)
+- Retries failed tasks up to 3 times
+
+---
+
+## AI Provider Configuration
+
+AI enrichment supports multiple providers:
+
+| Provider | Config Key | Notes |
+|----------|-----------|-------|
+| **Claude CLI** (default) | `claude-cli` | Uses `claude --print`, no API key needed |
+| **OpenAI** | `openai` | Requires `apiKey` |
+| **OpenRouter** | `openrouter` | Requires `apiKey` |
+| **Google Gemini** | `gemini` | Requires `apiKey` |
+| **GLM (Zhipu)** | `glm` | Requires `apiKey` |
+
+Configure via CLI:
 ```bash
-cp node_modules/@aitytech/agentkits-memory/hooks.json .claude/hooks.json
+npx agentkits-memory-hook settings . aiProvider.provider=openai aiProvider.apiKey=sk-...
+npx agentkits-memory-hook settings . aiProvider.provider=gemini aiProvider.apiKey=AIza...
 ```
+
+---
+
+## Lifecycle Management
+
+Manage memory growth over time:
+
+```bash
+# Compress observations older than 7 days, archive sessions older than 30 days
+npx agentkits-memory-hook lifecycle . --compress-days=7 --archive-days=30
+
+# Also auto-delete archived sessions older than 90 days
+npx agentkits-memory-hook lifecycle . --compress-days=7 --archive-days=30 --delete --delete-days=90
+
+# View lifecycle statistics
+npx agentkits-memory-hook lifecycle-stats .
+```
+
+| Stage | What Happens |
+|-------|-------------|
+| **Compress** | AI-compresses observations, generates session digests |
+| **Archive** | Marks old sessions as archived (excluded from context) |
+| **Delete** | Removes archived sessions (opt-in, requires `--delete`) |
+
+---
+
+## Export / Import
+
+Backup and restore your project memories:
+
+```bash
+# Export all sessions for a project
+npx agentkits-memory-hook export . my-project ./backup.json
+
+# Import from backup (deduplicates automatically)
+npx agentkits-memory-hook import . ./backup.json
+```
+
+Export format includes sessions, observations, prompts, and summaries.
 
 ---
 
@@ -264,22 +402,24 @@ cp node_modules/@aitytech/agentkits-memory/hooks.json .claude/hooks.json
 
 | Category | Use Case |
 |----------|----------|
-| `decision` | Architecture decisions, ADRs |
-| `pattern` | Reusable code patterns |
-| `error` | Error solutions and fixes |
-| `context` | Project context and facts |
-| `observation` | Session observations |
+| `decision` | Architecture decisions, tech stack picks, trade-offs |
+| `pattern` | Coding conventions, project patterns, recurring approaches |
+| `error` | Bug fixes, error solutions, debugging insights |
+| `context` | Project background, team conventions, environment setup |
+| `observation` | Auto-captured session observations |
 
 ---
 
 ## Storage
 
-Memories are stored in `.claude/memory/memory.db` within your project directory.
+Memories are stored in `.claude/memory/` within your project directory.
 
 ```
 .claude/memory/
-├── memory.db          # SQLite database
-└── memory.db-wal      # Write-ahead log (temp)
+├── memory.db          # SQLite database (all data)
+├── memory.db-wal      # Write-ahead log (temp)
+├── settings.json      # Persistent settings (AI provider, context config)
+└── embeddings-cache/  # Cached vector embeddings
 ```
 
 ---
