@@ -28,12 +28,17 @@
 </p>
 
 <p align="center">
+  <a href="https://www.agentkits.net/memory">Website</a> •
+  <a href="https://www.agentkits.net/memory/docs">Docs</a> •
   <a href="#quick-start">Quick Start</a> •
   <a href="#how-it-works">How It Works</a> •
   <a href="#multi-platform-support">Platforms</a> •
   <a href="#cli-commands">CLI</a> •
-  <a href="#web-viewer">Web Viewer</a> •
-  <a href="https://agentkits.net/memory">Docs</a>
+  <a href="#web-viewer">Web Viewer</a>
+</p>
+
+<p align="center">
+  <strong>English</strong> · <a href="./i18n/README.zh.md">简体中文</a> · <a href="./i18n/README.ja.md">日本語</a> · <a href="./i18n/README.ko.md">한국어</a> · <a href="./i18n/README.es.md">Español</a> · <a href="./i18n/README.de.md">Deutsch</a> · <a href="./i18n/README.fr.md">Français</a> · <a href="./i18n/README.pt-br.md">Português</a> · <a href="./i18n/README.vi.md">Tiếng Việt</a> · <a href="./i18n/README.ru.md">Русский</a> · <a href="./i18n/README.ar.md">العربية</a>
 </p>
 
 ---
