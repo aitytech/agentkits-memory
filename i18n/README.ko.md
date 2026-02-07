@@ -82,7 +82,7 @@
     (SQLite, 100% 로컬)
 ```
 
-1. **한 번만 설정** — `npx agentkits-memory-setup`이 플랫폼을 구성합니다
+1. **한 번만 설정** — `npx @aitytech/agentkits-memory`이 플랫폼을 구성합니다
 2. **자동 캡처** — 작업하는 동안 훅이 결정사항, 도구 사용, 요약을 기록합니다
 3. **컨텍스트 주입** — 다음 세션이 이전 세션의 관련 이력으로 시작됩니다
 4. **백그라운드 처리** — 워커가 AI로 관찰 데이터를 강화하고, 임베딩을 생성하며, 이전 데이터를 압축합니다
@@ -116,7 +116,7 @@
 최신 웹 인터페이스를 통해 메모리를 보고 관리하세요.
 
 ```bash
-npx agentkits-memory-web
+npx @aitytech/agentkits-memory web
 ```
 
 그런 다음 브라우저에서 **http://localhost:1905**를 엽니다.
@@ -169,7 +169,7 @@ npx agentkits-memory-web
 ### 옵션 2: 자동 설정 (모든 플랫폼)
 
 ```bash
-npx agentkits-memory-setup
+npx @aitytech/agentkits-memory
 ```
 
 플랫폼을 자동 감지하고 모든 것을 구성합니다: MCP 서버, 훅(Claude Code/OpenCode), 규칙 파일(Cursor/Windsurf/Cline), 임베딩 모델 다운로드.
@@ -177,9 +177,9 @@ npx agentkits-memory-setup
 **특정 플랫폼 대상 지정:**
 
 ```bash
-npx agentkits-memory-setup --platform=cursor
-npx agentkits-memory-setup --platform=windsurf,cline
-npx agentkits-memory-setup --platform=all
+npx @aitytech/agentkits-memory setup --platform=cursor
+npx @aitytech/agentkits-memory setup --platform=windsurf,cline
+npx @aitytech/agentkits-memory setup --platform=all
 ```
 
 ### 옵션 3: 수동 MCP 구성
@@ -191,7 +191,7 @@ npx agentkits-memory-setup --platform=all
   "mcpServers": {
     "memory": {
       "command": "npx",
-      "args": ["-y", "agentkits-memory-server"]
+      "args": ["-y", "@aitytech/agentkits-memory", "server"]
     }
   }
 }
@@ -277,37 +277,37 @@ memory_details({ ids: ["abc"] })
 
 ```bash
 # 한 번의 명령으로 설정 (플랫폼 자동 감지)
-npx agentkits-memory-setup
-npx agentkits-memory-setup --platform=cursor      # 특정 플랫폼
-npx agentkits-memory-setup --platform=all          # 모든 플랫폼
-npx agentkits-memory-setup --force                 # 재설치/업데이트
+npx @aitytech/agentkits-memory
+npx @aitytech/agentkits-memory setup --platform=cursor      # 특정 플랫폼
+npx @aitytech/agentkits-memory setup --platform=all          # 모든 플랫폼
+npx @aitytech/agentkits-memory setup --force                 # 재설치/업데이트
 
 # MCP 서버 시작
-npx agentkits-memory-server
+npx @aitytech/agentkits-memory server
 
 # 웹 뷰어 (포트 1905)
-npx agentkits-memory-web
+npx @aitytech/agentkits-memory web
 
 # 터미널 뷰어
-npx agentkits-memory-viewer
-npx agentkits-memory-viewer --stats                # 데이터베이스 통계
-npx agentkits-memory-viewer --json                 # JSON 출력
+npx @aitytech/agentkits-memory viewer
+npx @aitytech/agentkits-memory viewer --stats                # 데이터베이스 통계
+npx @aitytech/agentkits-memory viewer --json                 # JSON 출력
 
 # CLI에서 저장
-npx agentkits-memory-save "Use JWT with refresh tokens" --category pattern --tags auth,security
+npx @aitytech/agentkits-memory save "Use JWT with refresh tokens" --category pattern --tags auth,security
 
 # 설정
-npx agentkits-memory-hook settings .               # 현재 설정 보기
-npx agentkits-memory-hook settings . --reset       # 기본값으로 재설정
-npx agentkits-memory-hook settings . aiProvider.provider=openai aiProvider.apiKey=sk-...
+npx @aitytech/agentkits-memory hook settings .               # 현재 설정 보기
+npx @aitytech/agentkits-memory hook settings . --reset       # 기본값으로 재설정
+npx @aitytech/agentkits-memory hook settings . aiProvider.provider=openai aiProvider.apiKey=sk-...
 
 # 내보내기 / 가져오기
-npx agentkits-memory-hook export . my-project ./backup.json
-npx agentkits-memory-hook import . ./backup.json
+npx @aitytech/agentkits-memory hook export . my-project ./backup.json
+npx @aitytech/agentkits-memory hook import . ./backup.json
 
 # 라이프사이클 관리
-npx agentkits-memory-hook lifecycle . --compress-days=7 --archive-days=30
-npx agentkits-memory-hook lifecycle-stats .
+npx @aitytech/agentkits-memory hook lifecycle . --compress-days=7 --archive-days=30
+npx @aitytech/agentkits-memory hook lifecycle-stats .
 ```
 
 ---
@@ -359,7 +359,7 @@ const entry = await memory.getByKey('patterns', 'auth-pattern');
 
 훅 설정:
 ```bash
-npx agentkits-memory-setup
+npx @aitytech/agentkits-memory
 ```
 
 **자동으로 캡처되는 내용:**
@@ -449,15 +449,15 @@ export AGENTKITS_AI_ENRICHMENT=false
 
 ```bash
 # .claude/memory/settings.json에 저장됨 — 세션 간 유지
-npx agentkits-memory-hook settings . aiProvider.provider=openai aiProvider.apiKey=sk-...
-npx agentkits-memory-hook settings . aiProvider.provider=gemini aiProvider.apiKey=AIza...
-npx agentkits-memory-hook settings . aiProvider.baseUrl=https://openrouter.ai/api/v1
+npx @aitytech/agentkits-memory hook settings . aiProvider.provider=openai aiProvider.apiKey=sk-...
+npx @aitytech/agentkits-memory hook settings . aiProvider.provider=gemini aiProvider.apiKey=AIza...
+npx @aitytech/agentkits-memory hook settings . aiProvider.baseUrl=https://openrouter.ai/api/v1
 
 # 현재 설정 보기
-npx agentkits-memory-hook settings .
+npx @aitytech/agentkits-memory hook settings .
 
 # 기본값으로 재설정
-npx agentkits-memory-hook settings . --reset
+npx @aitytech/agentkits-memory hook settings . --reset
 ```
 
 > **우선순위:** 환경 변수가 settings.json을 재정의합니다. settings.json이 기본값을 재정의합니다.
@@ -470,13 +470,13 @@ npx agentkits-memory-hook settings . --reset
 
 ```bash
 # 7일 이상 된 관찰 압축, 30일 이상 된 세션 아카이브
-npx agentkits-memory-hook lifecycle . --compress-days=7 --archive-days=30
+npx @aitytech/agentkits-memory hook lifecycle . --compress-days=7 --archive-days=30
 
 # 90일 이상 된 아카이브된 세션도 자동 삭제
-npx agentkits-memory-hook lifecycle . --compress-days=7 --archive-days=30 --delete --delete-days=90
+npx @aitytech/agentkits-memory hook lifecycle . --compress-days=7 --archive-days=30 --delete --delete-days=90
 
 # 라이프사이클 통계 보기
-npx agentkits-memory-hook lifecycle-stats .
+npx @aitytech/agentkits-memory hook lifecycle-stats .
 ```
 
 | 단계 | 수행되는 작업 |
@@ -493,10 +493,10 @@ npx agentkits-memory-hook lifecycle-stats .
 
 ```bash
 # 프로젝트의 모든 세션 내보내기
-npx agentkits-memory-hook export . my-project ./backup.json
+npx @aitytech/agentkits-memory hook export . my-project ./backup.json
 
 # 백업에서 가져오기 (자동 중복 제거)
-npx agentkits-memory-hook import . ./backup.json
+npx @aitytech/agentkits-memory hook import . ./backup.json
 ```
 
 내보내기 형식에는 세션, 관찰, 프롬프트, 요약이 포함됩니다.

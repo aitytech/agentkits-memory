@@ -82,7 +82,7 @@ Phiên 1: "Dùng JWT cho auth"         Phiên 2: "Thêm login endpoint"
     (SQLite, 100% cục bộ)
 ```
 
-1. **Thiết lập một lần** — `npx agentkits-memory-setup` cấu hình nền tảng của bạn
+1. **Thiết lập một lần** — `npx @aitytech/agentkits-memory` cấu hình nền tảng của bạn
 2. **Tự động thu thập** — Hooks ghi lại quyết định, sử dụng công cụ và tóm tắt khi bạn làm việc
 3. **Chèn ngữ cảnh** — Phiên tiếp theo bắt đầu với lịch sử liên quan từ các phiên trước
 4. **Xử lý nền** — Workers làm giàu quan sát bằng AI, tạo embeddings, nén dữ liệu cũ
@@ -116,7 +116,7 @@ Hầu hết các công cụ bộ nhớ phân tán dữ liệu qua các file mark
 Xem và quản lý bộ nhớ của bạn qua giao diện web hiện đại.
 
 ```bash
-npx agentkits-memory-web
+npx @aitytech/agentkits-memory web
 ```
 
 Sau đó mở **http://localhost:1905** trong trình duyệt.
@@ -169,7 +169,7 @@ Lệnh này tự động cài đặt hooks, MCP server và skill quy trình bộ
 ### Cách 2: Thiết lập Tự động (Tất cả Nền tảng)
 
 ```bash
-npx agentkits-memory-setup
+npx @aitytech/agentkits-memory
 ```
 
 Lệnh này tự động phát hiện nền tảng của bạn và cấu hình mọi thứ: MCP server, hooks (Claude Code/OpenCode), rules files (Cursor/Windsurf/Cline), và tải xuống mô hình embedding.
@@ -177,9 +177,9 @@ Lệnh này tự động phát hiện nền tảng của bạn và cấu hình m
 **Chỉ định nền tảng cụ thể:**
 
 ```bash
-npx agentkits-memory-setup --platform=cursor
-npx agentkits-memory-setup --platform=windsurf,cline
-npx agentkits-memory-setup --platform=all
+npx @aitytech/agentkits-memory setup --platform=cursor
+npx @aitytech/agentkits-memory setup --platform=windsurf,cline
+npx @aitytech/agentkits-memory setup --platform=all
 ```
 
 ### Cách 3: Cấu hình MCP Thủ công
@@ -191,7 +191,7 @@ Nếu bạn muốn thiết lập thủ công, thêm vào cấu hình MCP của b
   "mcpServers": {
     "memory": {
       "command": "npx",
-      "args": ["-y", "agentkits-memory-server"]
+      "args": ["-y", "@aitytech/agentkits-memory", "server"]
     }
   }
 }
@@ -277,37 +277,37 @@ memory_details({ ids: ["abc"] })
 
 ```bash
 # Thiết lập một lệnh (tự động phát hiện nền tảng)
-npx agentkits-memory-setup
-npx agentkits-memory-setup --platform=cursor      # nền tảng cụ thể
-npx agentkits-memory-setup --platform=all          # tất cả nền tảng
-npx agentkits-memory-setup --force                 # cài đặt lại/cập nhật
+npx @aitytech/agentkits-memory
+npx @aitytech/agentkits-memory setup --platform=cursor      # nền tảng cụ thể
+npx @aitytech/agentkits-memory setup --platform=all          # tất cả nền tảng
+npx @aitytech/agentkits-memory setup --force                 # cài đặt lại/cập nhật
 
 # Khởi động MCP server
-npx agentkits-memory-server
+npx @aitytech/agentkits-memory server
 
 # Giao diện web (cổng 1905)
-npx agentkits-memory-web
+npx @aitytech/agentkits-memory web
 
 # Giao diện terminal
-npx agentkits-memory-viewer
-npx agentkits-memory-viewer --stats                # thống kê database
-npx agentkits-memory-viewer --json                 # đầu ra JSON
+npx @aitytech/agentkits-memory viewer
+npx @aitytech/agentkits-memory viewer --stats                # thống kê database
+npx @aitytech/agentkits-memory viewer --json                 # đầu ra JSON
 
 # Lưu từ CLI
-npx agentkits-memory-save "Use JWT with refresh tokens" --category pattern --tags auth,security
+npx @aitytech/agentkits-memory save "Use JWT with refresh tokens" --category pattern --tags auth,security
 
 # Cài đặt
-npx agentkits-memory-hook settings .               # xem cài đặt hiện tại
-npx agentkits-memory-hook settings . --reset       # đặt lại về mặc định
-npx agentkits-memory-hook settings . aiProvider.provider=openai aiProvider.apiKey=sk-...
+npx @aitytech/agentkits-memory hook settings .               # xem cài đặt hiện tại
+npx @aitytech/agentkits-memory hook settings . --reset       # đặt lại về mặc định
+npx @aitytech/agentkits-memory hook settings . aiProvider.provider=openai aiProvider.apiKey=sk-...
 
 # Export / Import
-npx agentkits-memory-hook export . my-project ./backup.json
-npx agentkits-memory-hook import . ./backup.json
+npx @aitytech/agentkits-memory hook export . my-project ./backup.json
+npx @aitytech/agentkits-memory hook import . ./backup.json
 
 # Quản lý vòng đời
-npx agentkits-memory-hook lifecycle . --compress-days=7 --archive-days=30
-npx agentkits-memory-hook lifecycle-stats .
+npx @aitytech/agentkits-memory hook lifecycle . --compress-days=7 --archive-days=30
+npx @aitytech/agentkits-memory hook lifecycle-stats .
 ```
 
 ---
@@ -359,7 +359,7 @@ Hooks tự động ghi lại các phiên code AI của bạn (chỉ Claude Code 
 
 Thiết lập hooks:
 ```bash
-npx agentkits-memory-setup
+npx @aitytech/agentkits-memory
 ```
 
 **Những gì được tự động ghi lại:**
@@ -449,15 +449,15 @@ export AGENTKITS_AI_ENRICHMENT=false
 
 ```bash
 # Lưu vào .claude/memory/settings.json — tồn tại qua các phiên
-npx agentkits-memory-hook settings . aiProvider.provider=openai aiProvider.apiKey=sk-...
-npx agentkits-memory-hook settings . aiProvider.provider=gemini aiProvider.apiKey=AIza...
-npx agentkits-memory-hook settings . aiProvider.baseUrl=https://openrouter.ai/api/v1
+npx @aitytech/agentkits-memory hook settings . aiProvider.provider=openai aiProvider.apiKey=sk-...
+npx @aitytech/agentkits-memory hook settings . aiProvider.provider=gemini aiProvider.apiKey=AIza...
+npx @aitytech/agentkits-memory hook settings . aiProvider.baseUrl=https://openrouter.ai/api/v1
 
 # Xem cài đặt hiện tại
-npx agentkits-memory-hook settings .
+npx @aitytech/agentkits-memory hook settings .
 
 # Đặt lại về mặc định
-npx agentkits-memory-hook settings . --reset
+npx @aitytech/agentkits-memory hook settings . --reset
 ```
 
 > **Ưu tiên:** Biến môi trường ghi đè settings.json. Settings.json ghi đè mặc định.
@@ -470,13 +470,13 @@ Quản lý tăng trưởng bộ nhớ theo thời gian:
 
 ```bash
 # Nén quan sát cũ hơn 7 ngày, lưu trữ phiên cũ hơn 30 ngày
-npx agentkits-memory-hook lifecycle . --compress-days=7 --archive-days=30
+npx @aitytech/agentkits-memory hook lifecycle . --compress-days=7 --archive-days=30
 
 # Cũng tự động xóa các phiên đã lưu trữ cũ hơn 90 ngày
-npx agentkits-memory-hook lifecycle . --compress-days=7 --archive-days=30 --delete --delete-days=90
+npx @aitytech/agentkits-memory hook lifecycle . --compress-days=7 --archive-days=30 --delete --delete-days=90
 
 # Xem thống kê vòng đời
-npx agentkits-memory-hook lifecycle-stats .
+npx @aitytech/agentkits-memory hook lifecycle-stats .
 ```
 
 | Giai đoạn | Điều gì Xảy ra |
@@ -493,10 +493,10 @@ Sao lưu và khôi phục bộ nhớ project của bạn:
 
 ```bash
 # Export tất cả phiên cho một project
-npx agentkits-memory-hook export . my-project ./backup.json
+npx @aitytech/agentkits-memory hook export . my-project ./backup.json
 
 # Import từ backup (tự động khử trùng)
-npx agentkits-memory-hook import . ./backup.json
+npx @aitytech/agentkits-memory hook import . ./backup.json
 ```
 
 Định dạng export bao gồm phiên, quan sát, prompts và tóm tắt.

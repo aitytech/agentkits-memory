@@ -82,7 +82,7 @@
     (SQLite، محلي 100%)
 ```
 
-1. **إعداد لمرة واحدة** — `npx agentkits-memory-setup` يقوم بإعداد منصتك
+1. **إعداد لمرة واحدة** — `npx @aitytech/agentkits-memory` يقوم بإعداد منصتك
 2. **التقاط تلقائي** — الخطافات تسجل القرارات واستخدام الأدوات والملخصات أثناء العمل
 3. **حقن السياق** — الجلسة التالية تبدأ بالتاريخ ذي الصلة من الجلسات السابقة
 4. **معالجة الخلفية** — العمال يثرون الملاحظات بالذكاء الاصطناعي، ويولدون التضمينات، ويضغطون البيانات القديمة
@@ -116,7 +116,7 @@
 اعرض وأدر ذكرياتك من خلال واجهة ويب حديثة.
 
 ```bash
-npx agentkits-memory-web
+npx @aitytech/agentkits-memory web
 ```
 
 ثم افتح **http://localhost:1905** في متصفحك.
@@ -169,7 +169,7 @@ npx agentkits-memory-web
 ### الخيار 2: إعداد تلقائي (جميع المنصات)
 
 ```bash
-npx agentkits-memory-setup
+npx @aitytech/agentkits-memory
 ```
 
 هذا يكتشف منصتك تلقائيًا ويكوّن كل شيء: خادم MCP، الخطافات (Claude Code/OpenCode)، ملفات القواعد (Cursor/Windsurf/Cline)، ويُنزل نموذج التضمين.
@@ -177,9 +177,9 @@ npx agentkits-memory-setup
 **استهدف منصة معينة:**
 
 ```bash
-npx agentkits-memory-setup --platform=cursor
-npx agentkits-memory-setup --platform=windsurf,cline
-npx agentkits-memory-setup --platform=all
+npx @aitytech/agentkits-memory setup --platform=cursor
+npx @aitytech/agentkits-memory setup --platform=windsurf,cline
+npx @aitytech/agentkits-memory setup --platform=all
 ```
 
 ### الخيار 3: إعداد MCP يدوي
@@ -191,7 +191,7 @@ npx agentkits-memory-setup --platform=all
   "mcpServers": {
     "memory": {
       "command": "npx",
-      "args": ["-y", "agentkits-memory-server"]
+      "args": ["-y", "@aitytech/agentkits-memory", "server"]
     }
   }
 }
@@ -277,37 +277,37 @@ memory_details({ ids: ["abc"] })
 
 ```bash
 # إعداد بأمر واحد (يكتشف المنصة تلقائيًا)
-npx agentkits-memory-setup
-npx agentkits-memory-setup --platform=cursor      # منصة محددة
-npx agentkits-memory-setup --platform=all          # جميع المنصات
-npx agentkits-memory-setup --force                 # إعادة التثبيت/التحديث
+npx @aitytech/agentkits-memory
+npx @aitytech/agentkits-memory setup --platform=cursor      # منصة محددة
+npx @aitytech/agentkits-memory setup --platform=all          # جميع المنصات
+npx @aitytech/agentkits-memory setup --force                 # إعادة التثبيت/التحديث
 
 # بدء خادم MCP
-npx agentkits-memory-server
+npx @aitytech/agentkits-memory server
 
 # عارض الويب (منفذ 1905)
-npx agentkits-memory-web
+npx @aitytech/agentkits-memory web
 
 # عارض الطرفية
-npx agentkits-memory-viewer
-npx agentkits-memory-viewer --stats                # إحصائيات قاعدة البيانات
-npx agentkits-memory-viewer --json                 # إخراج JSON
+npx @aitytech/agentkits-memory viewer
+npx @aitytech/agentkits-memory viewer --stats                # إحصائيات قاعدة البيانات
+npx @aitytech/agentkits-memory viewer --json                 # إخراج JSON
 
 # حفظ من CLI
-npx agentkits-memory-save "Use JWT with refresh tokens" --category pattern --tags auth,security
+npx @aitytech/agentkits-memory save "Use JWT with refresh tokens" --category pattern --tags auth,security
 
 # الإعدادات
-npx agentkits-memory-hook settings .               # عرض الإعدادات الحالية
-npx agentkits-memory-hook settings . --reset       # إعادة التعيين إلى الافتراضيات
-npx agentkits-memory-hook settings . aiProvider.provider=openai aiProvider.apiKey=sk-...
+npx @aitytech/agentkits-memory hook settings .               # عرض الإعدادات الحالية
+npx @aitytech/agentkits-memory hook settings . --reset       # إعادة التعيين إلى الافتراضيات
+npx @aitytech/agentkits-memory hook settings . aiProvider.provider=openai aiProvider.apiKey=sk-...
 
 # تصدير / استيراد
-npx agentkits-memory-hook export . my-project ./backup.json
-npx agentkits-memory-hook import . ./backup.json
+npx @aitytech/agentkits-memory hook export . my-project ./backup.json
+npx @aitytech/agentkits-memory hook import . ./backup.json
 
 # إدارة دورة الحياة
-npx agentkits-memory-hook lifecycle . --compress-days=7 --archive-days=30
-npx agentkits-memory-hook lifecycle-stats .
+npx @aitytech/agentkits-memory hook lifecycle . --compress-days=7 --archive-days=30
+npx @aitytech/agentkits-memory hook lifecycle-stats .
 ```
 
 ---
@@ -359,7 +359,7 @@ const entry = await memory.getByKey('patterns', 'auth-pattern');
 
 إعداد الخطافات:
 ```bash
-npx agentkits-memory-setup
+npx @aitytech/agentkits-memory
 ```
 
 **ما يُلتقط تلقائيًا:**
@@ -449,15 +449,15 @@ export AGENTKITS_AI_ENRICHMENT=false
 
 ```bash
 # محفوظ في .claude/memory/settings.json — يستمر عبر الجلسات
-npx agentkits-memory-hook settings . aiProvider.provider=openai aiProvider.apiKey=sk-...
-npx agentkits-memory-hook settings . aiProvider.provider=gemini aiProvider.apiKey=AIza...
-npx agentkits-memory-hook settings . aiProvider.baseUrl=https://openrouter.ai/api/v1
+npx @aitytech/agentkits-memory hook settings . aiProvider.provider=openai aiProvider.apiKey=sk-...
+npx @aitytech/agentkits-memory hook settings . aiProvider.provider=gemini aiProvider.apiKey=AIza...
+npx @aitytech/agentkits-memory hook settings . aiProvider.baseUrl=https://openrouter.ai/api/v1
 
 # عرض الإعدادات الحالية
-npx agentkits-memory-hook settings .
+npx @aitytech/agentkits-memory hook settings .
 
 # إعادة التعيين إلى الافتراضيات
-npx agentkits-memory-hook settings . --reset
+npx @aitytech/agentkits-memory hook settings . --reset
 ```
 
 > **الأولوية:** متغيرات البيئة تتجاوز settings.json. settings.json يتجاوز الافتراضيات.
@@ -470,13 +470,13 @@ npx agentkits-memory-hook settings . --reset
 
 ```bash
 # ضغط الملاحظات الأقدم من 7 أيام، أرشفة الجلسات الأقدم من 30 يومًا
-npx agentkits-memory-hook lifecycle . --compress-days=7 --archive-days=30
+npx @aitytech/agentkits-memory hook lifecycle . --compress-days=7 --archive-days=30
 
 # أيضًا حذف تلقائي للجلسات المؤرشفة الأقدم من 90 يومًا
-npx agentkits-memory-hook lifecycle . --compress-days=7 --archive-days=30 --delete --delete-days=90
+npx @aitytech/agentkits-memory hook lifecycle . --compress-days=7 --archive-days=30 --delete --delete-days=90
 
 # عرض إحصائيات دورة الحياة
-npx agentkits-memory-hook lifecycle-stats .
+npx @aitytech/agentkits-memory hook lifecycle-stats .
 ```
 
 | المرحلة | ما يحدث |
@@ -493,10 +493,10 @@ npx agentkits-memory-hook lifecycle-stats .
 
 ```bash
 # تصدير جميع الجلسات لمشروع
-npx agentkits-memory-hook export . my-project ./backup.json
+npx @aitytech/agentkits-memory hook export . my-project ./backup.json
 
 # استيراد من النسخة الاحتياطية (يزيل التكرار تلقائيًا)
-npx agentkits-memory-hook import . ./backup.json
+npx @aitytech/agentkits-memory hook import . ./backup.json
 ```
 
 تنسيق التصدير يتضمن الجلسات والملاحظات والمطالبات والملخصات.

@@ -82,7 +82,7 @@
     (SQLite, 100% 本地)
 ```
 
-1. **一次设置** — `npx agentkits-memory-setup` 配置你的平台
+1. **一次设置** — `npx @aitytech/agentkits-memory` 配置你的平台
 2. **自动捕获** — 钩子在你工作时记录决策、工具使用和摘要
 3. **上下文注入** — 下一个会话开始时包含过去会话的相关历史记录
 4. **后台处理** — 工作进程使用 AI 增强观察记录、生成嵌入、压缩旧数据
@@ -116,7 +116,7 @@
 通过现代 Web 界面查看和管理你的记忆。
 
 ```bash
-npx agentkits-memory-web
+npx @aitytech/agentkits-memory web
 ```
 
 然后在浏览器中打开 **http://localhost:1905**。
@@ -169,7 +169,7 @@ npx agentkits-memory-web
 ### 方式二：自动设置（所有平台）
 
 ```bash
-npx agentkits-memory-setup
+npx @aitytech/agentkits-memory
 ```
 
 这会自动检测你的平台并配置所有内容：MCP 服务器、钩子（Claude Code/OpenCode）、规则文件（Cursor/Windsurf/Cline），并下载嵌入模型。
@@ -177,9 +177,9 @@ npx agentkits-memory-setup
 **针对特定平台：**
 
 ```bash
-npx agentkits-memory-setup --platform=cursor
-npx agentkits-memory-setup --platform=windsurf,cline
-npx agentkits-memory-setup --platform=all
+npx @aitytech/agentkits-memory setup --platform=cursor
+npx @aitytech/agentkits-memory setup --platform=windsurf,cline
+npx @aitytech/agentkits-memory setup --platform=all
 ```
 
 ### 方式三：手动 MCP 配置
@@ -191,7 +191,7 @@ npx agentkits-memory-setup --platform=all
   "mcpServers": {
     "memory": {
       "command": "npx",
-      "args": ["-y", "agentkits-memory-server"]
+      "args": ["-y", "@aitytech/agentkits-memory", "server"]
     }
   }
 }
@@ -277,37 +277,37 @@ memory_details({ ids: ["abc"] })
 
 ```bash
 # 一键设置（自动检测平台）
-npx agentkits-memory-setup
-npx agentkits-memory-setup --platform=cursor      # 特定平台
-npx agentkits-memory-setup --platform=all          # 所有平台
-npx agentkits-memory-setup --force                 # 重新安装/更新
+npx @aitytech/agentkits-memory
+npx @aitytech/agentkits-memory setup --platform=cursor      # 特定平台
+npx @aitytech/agentkits-memory setup --platform=all          # 所有平台
+npx @aitytech/agentkits-memory setup --force                 # 重新安装/更新
 
 # 启动 MCP 服务器
-npx agentkits-memory-server
+npx @aitytech/agentkits-memory server
 
 # Web 查看器（端口 1905）
-npx agentkits-memory-web
+npx @aitytech/agentkits-memory web
 
 # 终端查看器
-npx agentkits-memory-viewer
-npx agentkits-memory-viewer --stats                # 数据库统计
-npx agentkits-memory-viewer --json                 # JSON 输出
+npx @aitytech/agentkits-memory viewer
+npx @aitytech/agentkits-memory viewer --stats                # 数据库统计
+npx @aitytech/agentkits-memory viewer --json                 # JSON 输出
 
 # 从 CLI 保存
-npx agentkits-memory-save "Use JWT with refresh tokens" --category pattern --tags auth,security
+npx @aitytech/agentkits-memory save "Use JWT with refresh tokens" --category pattern --tags auth,security
 
 # 设置
-npx agentkits-memory-hook settings .               # 查看当前设置
-npx agentkits-memory-hook settings . --reset       # 重置为默认值
-npx agentkits-memory-hook settings . aiProvider.provider=openai aiProvider.apiKey=sk-...
+npx @aitytech/agentkits-memory hook settings .               # 查看当前设置
+npx @aitytech/agentkits-memory hook settings . --reset       # 重置为默认值
+npx @aitytech/agentkits-memory hook settings . aiProvider.provider=openai aiProvider.apiKey=sk-...
 
 # 导出 / 导入
-npx agentkits-memory-hook export . my-project ./backup.json
-npx agentkits-memory-hook import . ./backup.json
+npx @aitytech/agentkits-memory hook export . my-project ./backup.json
+npx @aitytech/agentkits-memory hook import . ./backup.json
 
 # 生命周期管理
-npx agentkits-memory-hook lifecycle . --compress-days=7 --archive-days=30
-npx agentkits-memory-hook lifecycle-stats .
+npx @aitytech/agentkits-memory hook lifecycle . --compress-days=7 --archive-days=30
+npx @aitytech/agentkits-memory hook lifecycle-stats .
 ```
 
 ---
@@ -359,7 +359,7 @@ const entry = await memory.getByKey('patterns', 'auth-pattern');
 
 设置钩子：
 ```bash
-npx agentkits-memory-setup
+npx @aitytech/agentkits-memory
 ```
 
 **自动捕获的内容：**
@@ -449,15 +449,15 @@ export AGENTKITS_AI_ENRICHMENT=false
 
 ```bash
 # 保存到 .claude/memory/settings.json — 跨会话持久化
-npx agentkits-memory-hook settings . aiProvider.provider=openai aiProvider.apiKey=sk-...
-npx agentkits-memory-hook settings . aiProvider.provider=gemini aiProvider.apiKey=AIza...
-npx agentkits-memory-hook settings . aiProvider.baseUrl=https://openrouter.ai/api/v1
+npx @aitytech/agentkits-memory hook settings . aiProvider.provider=openai aiProvider.apiKey=sk-...
+npx @aitytech/agentkits-memory hook settings . aiProvider.provider=gemini aiProvider.apiKey=AIza...
+npx @aitytech/agentkits-memory hook settings . aiProvider.baseUrl=https://openrouter.ai/api/v1
 
 # 查看当前设置
-npx agentkits-memory-hook settings .
+npx @aitytech/agentkits-memory hook settings .
 
 # 重置为默认值
-npx agentkits-memory-hook settings . --reset
+npx @aitytech/agentkits-memory hook settings . --reset
 ```
 
 > **优先级：** 环境变量覆盖 settings.json。settings.json 覆盖默认值。
@@ -470,13 +470,13 @@ npx agentkits-memory-hook settings . --reset
 
 ```bash
 # 压缩 7 天前的观察记录，归档 30 天前的会话
-npx agentkits-memory-hook lifecycle . --compress-days=7 --archive-days=30
+npx @aitytech/agentkits-memory hook lifecycle . --compress-days=7 --archive-days=30
 
 # 同时自动删除 90 天前的已归档会话
-npx agentkits-memory-hook lifecycle . --compress-days=7 --archive-days=30 --delete --delete-days=90
+npx @aitytech/agentkits-memory hook lifecycle . --compress-days=7 --archive-days=30 --delete --delete-days=90
 
 # 查看生命周期统计
-npx agentkits-memory-hook lifecycle-stats .
+npx @aitytech/agentkits-memory hook lifecycle-stats .
 ```
 
 | 阶段 | 发生的事情 |
@@ -493,10 +493,10 @@ npx agentkits-memory-hook lifecycle-stats .
 
 ```bash
 # 导出项目的所有会话
-npx agentkits-memory-hook export . my-project ./backup.json
+npx @aitytech/agentkits-memory hook export . my-project ./backup.json
 
 # 从备份导入（自动去重）
-npx agentkits-memory-hook import . ./backup.json
+npx @aitytech/agentkits-memory hook import . ./backup.json
 ```
 
 导出格式包括会话、观察记录、提示和摘要。

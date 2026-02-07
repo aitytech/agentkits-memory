@@ -5,7 +5,7 @@
  * Simple CLI to save entries to the memory database.
  *
  * Usage:
- *   npx agentkits-memory-save --content "..." [options]
+ *   npx @aitytech/agentkits-memory save --content "..." [options]
  *
  * Options:
  *   --content=X       Content to save (required)

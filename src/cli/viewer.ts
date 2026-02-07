@@ -5,7 +5,7 @@
  * Simple CLI to view memory database contents.
  *
  * Usage:
- *   npx agentkits-memory-viewer [options]
+ *   npx @aitytech/agentkits-memory viewer [options]
  *
  * Options:
  *   --stats         Show database statistics

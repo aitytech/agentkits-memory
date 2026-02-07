@@ -1,6 +1,6 @@
 {
   "_comment": "REFERENCE ONLY - These hooks are integrated into .claude/hooks/*.sh scripts",
-  "_usage": "The shell scripts call 'npx agentkits-memory-hook <command>' for database integration",
+  "_usage": "The shell scripts call 'npx @aitytech/agentkits-memory hook <command>' for database integration",
   "hooks": {
     "SessionStart": [
       {
@@ -8,7 +8,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "npx agentkits-memory-hook context",
+            "command": "npx @aitytech/agentkits-memory hook context",
             "_note": "Called by .claude/hooks/session-start.sh"
           }
         ]
@@ -20,7 +20,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "npx agentkits-memory-hook summarize",
+            "command": "npx @aitytech/agentkits-memory hook summarize",
             "_note": "Called by .claude/hooks/on-stop.sh"
           }
         ]
@@ -28,17 +28,17 @@
     ]
   },
   "cliCommands": {
-    "agentkits-memory-hook": {
+    "hook": {
       "context": "Load context from database on session start",
       "session-init": "Initialize session in database",
       "observation": "Save tool observations to database",
       "summarize": "Create session summary on stop"
     },
-    "agentkits-memory-save": {
+    "save": {
       "description": "Save entry to database",
       "usage": "--content=X --category=X --tags=X --importance=X --project-dir=X"
     },
-    "agentkits-memory-viewer": {
+    "viewer": {
       "description": "View database contents",
       "usage": "--stats | --list | --namespace=X | --json | --export"
     }

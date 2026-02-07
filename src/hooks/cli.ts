@@ -6,7 +6,7 @@
  * Reads stdin, executes appropriate hook, outputs response.
  *
  * Usage:
- *   echo '{"session_id":"..."}' | npx agentkits-memory-hook <event>
+ *   echo '{"session_id":"..."}' | npx @aitytech/agentkits-memory hook <event>
  *
  * Events:
  *   context       - SessionStart: inject memory context
@@ -72,7 +72,7 @@ async function main(): Promise<void> {
     const event = process.argv[2];
 
     if (!event) {
-      console.error('Usage: agentkits-memory-hook <event>');
+      console.error('Usage: npx @aitytech/agentkits-memory hook <event>');
       console.error('Events: context, session-init, observation, summarize, user-message, enrich, enrich-summary, embed-session, enrich-session, compress-session, lifecycle, lifecycle-stats, export, import, settings');
       process.exit(1);
     }

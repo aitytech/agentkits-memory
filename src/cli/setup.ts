@@ -6,7 +6,7 @@
  * Supports multiple AI tools: Claude Code, Cursor, Windsurf, Cline, OpenCode.
  *
  * Usage:
- *   npx agentkits-memory-setup [options]
+ *   npx @aitytech/agentkits-memory [setup] [options]
  *
  * Options:
  *   --project-dir=X   Project directory (default: cwd)
@@ -61,7 +61,7 @@ interface McpConfig {
 
 const MEMORY_MCP_SERVER: McpServerConfig = {
   command: 'npx',
-  args: ['-y', 'agentkits-memory-server'],
+  args: ['-y', '@aitytech/agentkits-memory', 'server'],
 };
 
 /**
@@ -81,7 +81,7 @@ const MEMORY_HOOKS: HooksConfig = {
       hooks: [
         {
           type: 'command',
-          command: 'npx --yes agentkits-memory-hook context',
+          command: 'npx --yes @aitytech/agentkits-memory hook context',
           timeout: 15,
         },
       ],
@@ -95,7 +95,7 @@ const MEMORY_HOOKS: HooksConfig = {
       hooks: [
         {
           type: 'command',
-          command: 'npx --yes agentkits-memory-hook session-init',
+          command: 'npx --yes @aitytech/agentkits-memory hook session-init',
           timeout: 10,
         },
       ],
@@ -110,7 +110,7 @@ const MEMORY_HOOKS: HooksConfig = {
       hooks: [
         {
           type: 'command',
-          command: 'npx --yes agentkits-memory-hook observation',
+          command: 'npx --yes @aitytech/agentkits-memory hook observation',
           timeout: 15,
         },
       ],
@@ -124,7 +124,7 @@ const MEMORY_HOOKS: HooksConfig = {
       hooks: [
         {
           type: 'command',
-          command: 'npx --yes agentkits-memory-hook summarize',
+          command: 'npx --yes @aitytech/agentkits-memory hook summarize',
           timeout: 15,
         },
       ],
@@ -618,8 +618,8 @@ async function main() {
       }
 
       console.log('\n👉 Restart your AI tool to activate.');
-      console.log('💡 Open web viewer: npx agentkits-memory-web');
-      console.log('📋 Show hooks config: npx agentkits-memory-setup --show-hooks\n');
+      console.log('💡 Open web viewer: npx @aitytech/agentkits-memory web');
+      console.log('📋 Show hooks config: npx @aitytech/agentkits-memory setup --show-hooks\n');
 
       // Show manual hook instructions if some hooks couldn't be added
       if (targetPlatforms.includes('claude-code')) {

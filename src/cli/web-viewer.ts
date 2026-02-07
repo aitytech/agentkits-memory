@@ -6,7 +6,7 @@
  * Uses ProjectMemoryService for vector + text search.
  *
  * Usage:
- *   npx agentkits-memory-web [--port=1905]
+ *   npx @aitytech/agentkits-memory web [--port=1905]
  *
  * @module @aitytech/agentkits-memory/cli/web-viewer
  */

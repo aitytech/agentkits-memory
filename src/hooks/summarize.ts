@@ -82,7 +82,7 @@ export class SummarizeHook implements EventHandler {
       // Summary enrichment needs transcript path — handled separately (not via queue)
       if (isAIEnrichmentEnabled() && input.transcriptPath) {
         try {
-          const cliPath = path.resolve(input.cwd, 'dist/hooks/cli.js');
+          const cliPath = path.resolve(path.dirname(new URL(import.meta.url).pathname), 'cli.js');
           const child = spawn('node', [
             cliPath, 'enrich-summary', input.sessionId, input.cwd, input.transcriptPath,
           ], {

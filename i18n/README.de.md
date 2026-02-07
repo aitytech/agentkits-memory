@@ -82,7 +82,7 @@ Session 1: "Use JWT for auth"          Session 2: "Add login endpoint"
     (SQLite, 100% lokal)
 ```
 
-1. **Einmal einrichten** — `npx agentkits-memory-setup` konfiguriert Ihre Plattform
+1. **Einmal einrichten** — `npx @aitytech/agentkits-memory` konfiguriert Ihre Plattform
 2. **Auto-Capture** — Hooks zeichnen Entscheidungen, Tool-Nutzung und Zusammenfassungen während der Arbeit auf
 3. **Kontext-Injektion** — Nächste Session startet mit relevantem Verlauf aus vergangenen Sessions
 4. **Hintergrundverarbeitung** — Worker reichern Beobachtungen mit KI an, generieren Embeddings, komprimieren alte Daten
@@ -116,7 +116,7 @@ Die meisten Memory-Tools verstreuen Daten über Markdown-Dateien, benötigen Pyt
 Zeigen Sie Ihre Erinnerungen über eine moderne Web-Oberfläche an und verwalten Sie sie.
 
 ```bash
-npx agentkits-memory-web
+npx @aitytech/agentkits-memory web
 ```
 
 Öffnen Sie dann **http://localhost:1905** in Ihrem Browser.
@@ -169,7 +169,7 @@ Dies installiert Hooks, MCP-Server und Memory-Workflow-Skill automatisch. Starte
 ### Option 2: Automatisches Setup (Alle Plattformen)
 
 ```bash
-npx agentkits-memory-setup
+npx @aitytech/agentkits-memory
 ```
 
 Dies erkennt Ihre Plattform automatisch und konfiguriert alles: MCP-Server, Hooks (Claude Code/OpenCode), Rules-Dateien (Cursor/Windsurf/Cline) und lädt das Embedding-Modell herunter.
@@ -177,9 +177,9 @@ Dies erkennt Ihre Plattform automatisch und konfiguriert alles: MCP-Server, Hook
 **Spezifische Plattform auswählen:**
 
 ```bash
-npx agentkits-memory-setup --platform=cursor
-npx agentkits-memory-setup --platform=windsurf,cline
-npx agentkits-memory-setup --platform=all
+npx @aitytech/agentkits-memory setup --platform=cursor
+npx @aitytech/agentkits-memory setup --platform=windsurf,cline
+npx @aitytech/agentkits-memory setup --platform=all
 ```
 
 ### Option 3: Manuelle MCP-Konfiguration
@@ -191,7 +191,7 @@ Wenn Sie manuelle Einrichtung bevorzugen, fügen Sie zu Ihrer MCP-Konfiguration 
   "mcpServers": {
     "memory": {
       "command": "npx",
-      "args": ["-y", "agentkits-memory-server"]
+      "args": ["-y", "@aitytech/agentkits-memory", "server"]
     }
   }
 }
@@ -277,37 +277,37 @@ memory_details({ ids: ["abc"] })
 
 ```bash
 # Ein-Befehl-Setup (erkennt Plattform automatisch)
-npx agentkits-memory-setup
-npx agentkits-memory-setup --platform=cursor      # spezifische Plattform
-npx agentkits-memory-setup --platform=all          # alle Plattformen
-npx agentkits-memory-setup --force                 # neu installieren/aktualisieren
+npx @aitytech/agentkits-memory
+npx @aitytech/agentkits-memory setup --platform=cursor      # spezifische Plattform
+npx @aitytech/agentkits-memory setup --platform=all          # alle Plattformen
+npx @aitytech/agentkits-memory setup --force                 # neu installieren/aktualisieren
 
 # MCP-Server starten
-npx agentkits-memory-server
+npx @aitytech/agentkits-memory server
 
 # Web Viewer (Port 1905)
-npx agentkits-memory-web
+npx @aitytech/agentkits-memory web
 
 # Terminal-Viewer
-npx agentkits-memory-viewer
-npx agentkits-memory-viewer --stats                # Datenbankstatistiken
-npx agentkits-memory-viewer --json                 # JSON-Ausgabe
+npx @aitytech/agentkits-memory viewer
+npx @aitytech/agentkits-memory viewer --stats                # Datenbankstatistiken
+npx @aitytech/agentkits-memory viewer --json                 # JSON-Ausgabe
 
 # Aus CLI speichern
-npx agentkits-memory-save "Use JWT with refresh tokens" --category pattern --tags auth,security
+npx @aitytech/agentkits-memory save "Use JWT with refresh tokens" --category pattern --tags auth,security
 
 # Einstellungen
-npx agentkits-memory-hook settings .               # aktuelle Einstellungen anzeigen
-npx agentkits-memory-hook settings . --reset       # auf Standard zurücksetzen
-npx agentkits-memory-hook settings . aiProvider.provider=openai aiProvider.apiKey=sk-...
+npx @aitytech/agentkits-memory hook settings .               # aktuelle Einstellungen anzeigen
+npx @aitytech/agentkits-memory hook settings . --reset       # auf Standard zurücksetzen
+npx @aitytech/agentkits-memory hook settings . aiProvider.provider=openai aiProvider.apiKey=sk-...
 
 # Export / Import
-npx agentkits-memory-hook export . my-project ./backup.json
-npx agentkits-memory-hook import . ./backup.json
+npx @aitytech/agentkits-memory hook export . my-project ./backup.json
+npx @aitytech/agentkits-memory hook import . ./backup.json
 
 # Lifecycle-Management
-npx agentkits-memory-hook lifecycle . --compress-days=7 --archive-days=30
-npx agentkits-memory-hook lifecycle-stats .
+npx @aitytech/agentkits-memory hook lifecycle . --compress-days=7 --archive-days=30
+npx @aitytech/agentkits-memory hook lifecycle-stats .
 ```
 
 ---
@@ -359,7 +359,7 @@ Hooks erfassen Ihre KI-Coding-Sessions automatisch (nur Claude Code und OpenCode
 
 Hooks einrichten:
 ```bash
-npx agentkits-memory-setup
+npx @aitytech/agentkits-memory
 ```
 
 **Was automatisch erfasst wird:**
@@ -449,15 +449,15 @@ export AGENTKITS_AI_ENRICHMENT=false
 
 ```bash
 # In .claude/memory/settings.json gespeichert — bleibt über Sessions bestehen
-npx agentkits-memory-hook settings . aiProvider.provider=openai aiProvider.apiKey=sk-...
-npx agentkits-memory-hook settings . aiProvider.provider=gemini aiProvider.apiKey=AIza...
-npx agentkits-memory-hook settings . aiProvider.baseUrl=https://openrouter.ai/api/v1
+npx @aitytech/agentkits-memory hook settings . aiProvider.provider=openai aiProvider.apiKey=sk-...
+npx @aitytech/agentkits-memory hook settings . aiProvider.provider=gemini aiProvider.apiKey=AIza...
+npx @aitytech/agentkits-memory hook settings . aiProvider.baseUrl=https://openrouter.ai/api/v1
 
 # Aktuelle Einstellungen anzeigen
-npx agentkits-memory-hook settings .
+npx @aitytech/agentkits-memory hook settings .
 
 # Auf Standard zurücksetzen
-npx agentkits-memory-hook settings . --reset
+npx @aitytech/agentkits-memory hook settings . --reset
 ```
 
 > **Priorität:** Umgebungsvariablen überschreiben settings.json. Settings.json überschreibt Standardwerte.
@@ -470,13 +470,13 @@ Memory-Wachstum im Laufe der Zeit verwalten:
 
 ```bash
 # Beobachtungen älter als 7 Tage komprimieren, Sessions älter als 30 Tage archivieren
-npx agentkits-memory-hook lifecycle . --compress-days=7 --archive-days=30
+npx @aitytech/agentkits-memory hook lifecycle . --compress-days=7 --archive-days=30
 
 # Zusätzlich archivierte Sessions älter als 90 Tage automatisch löschen
-npx agentkits-memory-hook lifecycle . --compress-days=7 --archive-days=30 --delete --delete-days=90
+npx @aitytech/agentkits-memory hook lifecycle . --compress-days=7 --archive-days=30 --delete --delete-days=90
 
 # Lifecycle-Statistiken anzeigen
-npx agentkits-memory-hook lifecycle-stats .
+npx @aitytech/agentkits-memory hook lifecycle-stats .
 ```
 
 | Phase | Was passiert |
@@ -493,10 +493,10 @@ Backup und Wiederherstellung Ihrer Projekt-Erinnerungen:
 
 ```bash
 # Alle Sessions für ein Projekt exportieren
-npx agentkits-memory-hook export . my-project ./backup.json
+npx @aitytech/agentkits-memory hook export . my-project ./backup.json
 
 # Aus Backup importieren (dedupliziert automatisch)
-npx agentkits-memory-hook import . ./backup.json
+npx @aitytech/agentkits-memory hook import . ./backup.json
 ```
 
 Export-Format enthält Sessions, Beobachtungen, Prompts und Zusammenfassungen.

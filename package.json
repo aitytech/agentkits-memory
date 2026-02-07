@@ -1,6 +1,6 @@
 {
   "name": "@aitytech/agentkits-memory",
-  "version": "2.2.2",
+  "version": "2.2.3",
   "type": "module",
   "description": "Persistent memory system for AI coding assistants via MCP. Works with Claude Code, Cursor, Copilot, Windsurf, Cline.",
   "main": "dist/index.js",
@@ -14,6 +14,7 @@
     "./*": "./dist/*.js"
   },
   "bin": {
+    "agentkits-memory": "./dist/cli/main.js",
     "agentkits-memory-hook": "./dist/hooks/cli.js",
     "agentkits-memory-server": "./dist/mcp/server.js",
     "agentkits-memory-viewer": "./dist/cli/viewer.js",
@@ -22,7 +23,7 @@
     "agentkits-memory-setup": "./dist/cli/setup.js"
   },
   "scripts": {
-    "build": "tsc && chmod +x dist/hooks/cli.js dist/mcp/server.js dist/cli/viewer.js dist/cli/web-viewer.js dist/cli/save.js dist/cli/setup.js",
+    "build": "tsc && chmod +x dist/cli/main.js dist/hooks/cli.js dist/mcp/server.js dist/cli/viewer.js dist/cli/web-viewer.js dist/cli/save.js dist/cli/setup.js",
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",
     "typecheck": "tsc --noEmit",

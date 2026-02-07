@@ -671,7 +671,7 @@ export class MemoryHookService {
 
     // Spawn detached worker (worker writes its own PID to lock file on start)
     try {
-      const cliPath = path.resolve(cwd, 'dist/hooks/cli.js');
+      const cliPath = path.resolve(path.dirname(new URL(import.meta.url).pathname), 'cli.js');
       const child = spawn('node', [cliPath, workerType, cwd], {
         detached: true,
         stdio: 'ignore',

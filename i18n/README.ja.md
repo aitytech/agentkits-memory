@@ -82,7 +82,7 @@
     (SQLite、100%ローカル)
 ```
 
-1. **1回セットアップ** — `npx agentkits-memory-setup`でプラットフォームを設定
+1. **1回セットアップ** — `npx @aitytech/agentkits-memory`でプラットフォームを設定
 2. **自動キャプチャ** — 作業中に決定事項、ツール使用状況、サマリーをフックが記録
 3. **コンテキスト注入** — 次のセッションは過去のセッションの関連履歴から始まります
 4. **バックグラウンド処理** — ワーカーがAIで観測データをエンリッチし、埋め込みを生成し、古いデータを圧縮
@@ -116,7 +116,7 @@
 モダンなWebインターフェースでメモリを表示および管理します。
 
 ```bash
-npx agentkits-memory-web
+npx @aitytech/agentkits-memory web
 ```
 
 その後、ブラウザで**http://localhost:1905**を開きます。
@@ -169,7 +169,7 @@ npx agentkits-memory-web
 ### オプション2: 自動セットアップ (全プラットフォーム)
 
 ```bash
-npx agentkits-memory-setup
+npx @aitytech/agentkits-memory
 ```
 
 これにより、プラットフォームを自動検出し、すべてを設定します: MCPサーバー、フック(Claude Code/OpenCode)、rulesファイル(Cursor/Windsurf/Cline)、および埋め込みモデルのダウンロード。
@@ -177,9 +177,9 @@ npx agentkits-memory-setup
 **特定のプラットフォームをターゲットにする:**
 
 ```bash
-npx agentkits-memory-setup --platform=cursor
-npx agentkits-memory-setup --platform=windsurf,cline
-npx agentkits-memory-setup --platform=all
+npx @aitytech/agentkits-memory setup --platform=cursor
+npx @aitytech/agentkits-memory setup --platform=windsurf,cline
+npx @aitytech/agentkits-memory setup --platform=all
 ```
 
 ### オプション3: 手動MCP設定
@@ -191,7 +191,7 @@ npx agentkits-memory-setup --platform=all
   "mcpServers": {
     "memory": {
       "command": "npx",
-      "args": ["-y", "agentkits-memory-server"]
+      "args": ["-y", "@aitytech/agentkits-memory", "server"]
     }
   }
 }
@@ -277,37 +277,37 @@ memory_details({ ids: ["abc"] })
 
 ```bash
 # 1コマンドセットアップ(プラットフォームを自動検出)
-npx agentkits-memory-setup
-npx agentkits-memory-setup --platform=cursor      # 特定のプラットフォーム
-npx agentkits-memory-setup --platform=all          # すべてのプラットフォーム
-npx agentkits-memory-setup --force                 # 再インストール/更新
+npx @aitytech/agentkits-memory
+npx @aitytech/agentkits-memory setup --platform=cursor      # 特定のプラットフォーム
+npx @aitytech/agentkits-memory setup --platform=all          # すべてのプラットフォーム
+npx @aitytech/agentkits-memory setup --force                 # 再インストール/更新
 
 # MCPサーバーを起動
-npx agentkits-memory-server
+npx @aitytech/agentkits-memory server
 
 # Webビューア(ポート1905)
-npx agentkits-memory-web
+npx @aitytech/agentkits-memory web
 
 # ターミナルビューア
-npx agentkits-memory-viewer
-npx agentkits-memory-viewer --stats                # データベース統計
-npx agentkits-memory-viewer --json                 # JSON出力
+npx @aitytech/agentkits-memory viewer
+npx @aitytech/agentkits-memory viewer --stats                # データベース統計
+npx @aitytech/agentkits-memory viewer --json                 # JSON出力
 
 # CLIから保存
-npx agentkits-memory-save "リフレッシュトークン付きJWTを使用" --category pattern --tags auth,security
+npx @aitytech/agentkits-memory save "リフレッシュトークン付きJWTを使用" --category pattern --tags auth,security
 
 # 設定
-npx agentkits-memory-hook settings .               # 現在の設定を表示
-npx agentkits-memory-hook settings . --reset       # デフォルトにリセット
-npx agentkits-memory-hook settings . aiProvider.provider=openai aiProvider.apiKey=sk-...
+npx @aitytech/agentkits-memory hook settings .               # 現在の設定を表示
+npx @aitytech/agentkits-memory hook settings . --reset       # デフォルトにリセット
+npx @aitytech/agentkits-memory hook settings . aiProvider.provider=openai aiProvider.apiKey=sk-...
 
 # エクスポート/インポート
-npx agentkits-memory-hook export . my-project ./backup.json
-npx agentkits-memory-hook import . ./backup.json
+npx @aitytech/agentkits-memory hook export . my-project ./backup.json
+npx @aitytech/agentkits-memory hook import . ./backup.json
 
 # ライフサイクル管理
-npx agentkits-memory-hook lifecycle . --compress-days=7 --archive-days=30
-npx agentkits-memory-hook lifecycle-stats .
+npx @aitytech/agentkits-memory hook lifecycle . --compress-days=7 --archive-days=30
+npx @aitytech/agentkits-memory hook lifecycle-stats .
 ```
 
 ---
@@ -359,7 +359,7 @@ const entry = await memory.getByKey('patterns', 'auth-pattern');
 
 フックのセットアップ:
 ```bash
-npx agentkits-memory-setup
+npx @aitytech/agentkits-memory
 ```
 
 **自動的にキャプチャされるもの:**
@@ -449,15 +449,15 @@ export AGENTKITS_AI_ENRICHMENT=false
 
 ```bash
 # .claude/memory/settings.jsonに保存 — セッション間で永続化
-npx agentkits-memory-hook settings . aiProvider.provider=openai aiProvider.apiKey=sk-...
-npx agentkits-memory-hook settings . aiProvider.provider=gemini aiProvider.apiKey=AIza...
-npx agentkits-memory-hook settings . aiProvider.baseUrl=https://openrouter.ai/api/v1
+npx @aitytech/agentkits-memory hook settings . aiProvider.provider=openai aiProvider.apiKey=sk-...
+npx @aitytech/agentkits-memory hook settings . aiProvider.provider=gemini aiProvider.apiKey=AIza...
+npx @aitytech/agentkits-memory hook settings . aiProvider.baseUrl=https://openrouter.ai/api/v1
 
 # 現在の設定を表示
-npx agentkits-memory-hook settings .
+npx @aitytech/agentkits-memory hook settings .
 
 # デフォルトにリセット
-npx agentkits-memory-hook settings . --reset
+npx @aitytech/agentkits-memory hook settings . --reset
 ```
 
 > **優先順位:** 環境変数がsettings.jsonをオーバーライドします。settings.jsonがデフォルトをオーバーライドします。
@@ -470,13 +470,13 @@ npx agentkits-memory-hook settings . --reset
 
 ```bash
 # 7日以上前の観測データを圧縮し、30日以上前のセッションをアーカイブ
-npx agentkits-memory-hook lifecycle . --compress-days=7 --archive-days=30
+npx @aitytech/agentkits-memory hook lifecycle . --compress-days=7 --archive-days=30
 
 # 90日以上前のアーカイブされたセッションも自動削除
-npx agentkits-memory-hook lifecycle . --compress-days=7 --archive-days=30 --delete --delete-days=90
+npx @aitytech/agentkits-memory hook lifecycle . --compress-days=7 --archive-days=30 --delete --delete-days=90
 
 # ライフサイクル統計を表示
-npx agentkits-memory-hook lifecycle-stats .
+npx @aitytech/agentkits-memory hook lifecycle-stats .
 ```
 
 | ステージ | 何が起こるか |
@@ -493,10 +493,10 @@ npx agentkits-memory-hook lifecycle-stats .
 
 ```bash
 # プロジェクトのすべてのセッションをエクスポート
-npx agentkits-memory-hook export . my-project ./backup.json
+npx @aitytech/agentkits-memory hook export . my-project ./backup.json
 
 # バックアップからインポート(自動的に重複排除)
-npx agentkits-memory-hook import . ./backup.json
+npx @aitytech/agentkits-memory hook import . ./backup.json
 ```
 
 エクスポート形式にはセッション、観測、プロンプト、サマリーが含まれます。

@@ -12,7 +12,7 @@
  *     "mcpServers": {
  *       "memory": {
  *         "command": "npx",
- *         "args": ["agentkits-memory-server"]
+ *         "args": ["-y", "@aitytech/agentkits-memory", "server"]
  *       }
  *     }
  *   }
