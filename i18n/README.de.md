@@ -57,7 +57,7 @@
 | **MCP Server** | 9 Tools: save, search, timeline, details, recall, list, update, delete, status |
 | **Auto-Capture** | Hooks erfassen Session-Kontext, Tool-Nutzung, Zusammenfassungen automatisch |
 | **KI-Anreicherung** | Background-Worker reichern Beobachtungen mit KI-generierten Zusammenfassungen an |
-| **Vektorsuche** | HNSW semantische Ähnlichkeit mit mehrsprachigen Embeddings (100+ Sprachen) |
+| **Vektorsuche** | sqlite-vec semantische Ähnlichkeit mit mehrsprachigen Embeddings (100+ Sprachen) |
 | **Web Viewer** | Browser-UI zum Anzeigen, Suchen, Hinzufügen, Bearbeiten, Löschen von Erinnerungen |
 | **3-Schicht-Suche** | Progressive Disclosure spart ~87% Tokens vs. alles abrufen |
 | **Lifecycle-Mgmt** | Auto-Komprimierung, Archivierung und Bereinigung alter Sessions |
@@ -634,7 +634,7 @@ AgentKits Memory ist gründlich getestet mit **970 Unit-Tests** in 21 Test-Suite
 |-----------|-------|-----------|
 | Kern-Speicherdienst | 56 | CRUD, Suche, Paginierung, Kategorien, Tags, Import/Export |
 | SQLite-Backend | 65 | Schema, Migrationen, FTS5, Transaktionen, Fehlerbehandlung |
-| HNSW-Vektorindex | 47 | Einfügen, Suche, Löschen, Persistenz, Grenzfälle |
+| sqlite-vec-Vektorindex | 47 | Einfügen, Suche, Löschen, Persistenz, Grenzfälle |
 | Hybride Suche | 44 | FTS + Vektor-Fusion, Bewertung, Ranking, Filter |
 | Token-Ökonomie | 27 | 3-Schicht-Suchbudgets, Kürzung, Optimierung |
 | Embedding-System | 63 | Cache, Subprozess, lokale Modelle, CJK-Unterstützung |

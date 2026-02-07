@@ -57,9 +57,12 @@ describeCond('BetterSqlite3Backend', () => {
       const health = await backend.healthCheck();
       expect(health.status).toBe('healthy');
 
-      // cache component is repurposed for CJK status
+      // index component shows tokenizer (Trigram for CJK support)
+      expect(health.components.index.status).toBe('healthy');
+      expect(health.components.index.message).toContain('trigram');
+      // cache component shows vector search status
       expect(health.components.cache.status).toBe('healthy');
-      expect(health.components.cache.message).toContain('Trigram');
+      expect(health.components.cache.message).toContain('sqlite-vec');
     });
   });
 
@@ -649,9 +652,9 @@ describe('createBetterSqlite3Backend factory', () => {
 
       // Retrieve and verify embedding is preserved
       const entry = await backend.get('emb-test');
-      expect(entry).toBeDefined();
-      expect(entry?.embedding).toBeDefined();
-      expect(entry?.embedding?.length).toBe(384);
+      expect(entry).not.toBeNull();
+      expect(entry!.embedding).toBeInstanceOf(Float32Array);
+      expect(entry!.embedding!.length).toBe(384);
       expect(entry?.embedding?.[0]).toBeCloseTo(0, 5);
       expect(entry?.embedding?.[100]).toBeCloseTo(100 / 384, 5);
       expect(entry?.embedding?.[383]).toBeCloseTo(383 / 384, 5);
@@ -668,7 +671,7 @@ describe('createBetterSqlite3Backend factory', () => {
       });
 
       // Backend is created with the configuration
-      expect(backend).toBeDefined();
+      expect(backend).toBeInstanceOf(BetterSqlite3Backend);
       // Note: initialization would fail without the actual extension file
     });
   });
@@ -857,12 +860,32 @@ describeCond('BetterSqlite3Backend advanced', () => {
   });
 
   describe('semantic search', () => {
+    let vecBackend: BetterSqlite3Backend;
+
+    beforeEach(async () => {
+      // Create separate backend with 8-dimension vectors for these tests
+      vecBackend = createBetterSqlite3Backend({
+        databasePath: ':memory:',
+        ftsTokenizer: 'trigram',
+        verbose: false,
+        vectorDimensions: 8,
+      });
+      await vecBackend.initialize();
+    });
+
+    afterEach(async () => {
+      await vecBackend.shutdown();
+    });
+
     it('should perform vector search with embeddings', async () => {
+      // Verify sqlite-vec is available
+      expect(vecBackend.isVectorAvailable()).toBe(true);
+
       // Create distinct vectors - embedding1 is similar to query, embedding2 is different
       const embedding1 = new Float32Array([1, 0, 0, 0, 0, 0, 0, 0]);
       const embedding2 = new Float32Array([0, 1, 0, 0, 0, 0, 0, 0]);
 
-      await backend.store({
+      await vecBackend.store({
         id: 'vec-1',
         key: 'vector-1',
         content: 'Vector content 1',
@@ -880,7 +903,7 @@ describeCond('BetterSqlite3Backend advanced', () => {
         lastAccessedAt: Date.now(),
       });
 
-      await backend.store({
+      await vecBackend.store({
         id: 'vec-2',
         key: 'vector-2',
         content: 'Vector content 2',
@@ -900,7 +923,7 @@ describeCond('BetterSqlite3Backend advanced', () => {
 
       // Query similar to embedding1
       const queryEmbedding = new Float32Array([1, 0, 0, 0, 0, 0, 0, 0]);
-      const results = await backend.search(queryEmbedding, { k: 2 });
+      const results = await vecBackend.search(queryEmbedding, { k: 2 });
 
       expect(results.length).toBe(2);
       // First result should be vec-1 (identical to query)
@@ -911,7 +934,7 @@ describeCond('BetterSqlite3Backend advanced', () => {
     it('should apply namespace filter in vector search', async () => {
       const embedding = new Float32Array(8).fill(0.5);
 
-      await backend.store({
+      await vecBackend.store({
         id: 'vec-ns1',
         key: 'vector-ns1',
         content: 'Content 1',
@@ -929,7 +952,7 @@ describeCond('BetterSqlite3Backend advanced', () => {
         lastAccessedAt: Date.now(),
       });
 
-      await backend.store({
+      await vecBackend.store({
         id: 'vec-ns2',
         key: 'vector-ns2',
         content: 'Content 2',
@@ -947,7 +970,7 @@ describeCond('BetterSqlite3Backend advanced', () => {
         lastAccessedAt: Date.now(),
       });
 
-      const results = await backend.search(embedding, {
+      const results = await vecBackend.search(embedding, {
         k: 10,
         filters: { namespace: 'ns1' },
       });
@@ -959,7 +982,7 @@ describeCond('BetterSqlite3Backend advanced', () => {
     it('should apply memoryType filter in vector search', async () => {
       const embedding = new Float32Array(8).fill(0.5);
 
-      await backend.store({
+      await vecBackend.store({
         id: 'vec-type1',
         key: 'vector-type1',
         content: 'Content 1',
@@ -977,7 +1000,7 @@ describeCond('BetterSqlite3Backend advanced', () => {
         lastAccessedAt: Date.now(),
       });
 
-      await backend.store({
+      await vecBackend.store({
         id: 'vec-type2',
         key: 'vector-type2',
         content: 'Content 2',
@@ -995,7 +1018,7 @@ describeCond('BetterSqlite3Backend advanced', () => {
         lastAccessedAt: Date.now(),
       });
 
-      const results = await backend.search(embedding, {
+      const results = await vecBackend.search(embedding, {
         k: 10,
         filters: { memoryType: 'episodic' },
       });
@@ -1008,7 +1031,7 @@ describeCond('BetterSqlite3Backend advanced', () => {
       const embedding1 = new Float32Array(8).fill(1);
       const embedding2 = new Float32Array(8).fill(-1);
 
-      await backend.store({
+      await vecBackend.store({
         id: 'vec-sim',
         key: 'similar',
         content: 'Similar content',
@@ -1026,7 +1049,7 @@ describeCond('BetterSqlite3Backend advanced', () => {
         lastAccessedAt: Date.now(),
       });
 
-      await backend.store({
+      await vecBackend.store({
         id: 'vec-diff',
         key: 'different',
         content: 'Different content',
@@ -1045,7 +1068,7 @@ describeCond('BetterSqlite3Backend advanced', () => {
       });
 
       const queryEmbedding = new Float32Array(8).fill(1);
-      const results = await backend.search(queryEmbedding, {
+      const results = await vecBackend.search(queryEmbedding, {
         k: 10,
         threshold: 0.9, // High threshold should filter out dissimilar
       });
@@ -1054,11 +1077,11 @@ describeCond('BetterSqlite3Backend advanced', () => {
       expect(results[0].entry.id).toBe('vec-sim');
     });
 
-    it('should handle vector length mismatch', async () => {
+    it('should store entry but skip vector when dimension mismatch', async () => {
       const embedding1 = new Float32Array(8).fill(0.5);
-      const embedding2 = new Float32Array(16).fill(0.5); // Different size
+      const embedding2 = new Float32Array(16).fill(0.5); // Different size - will be skipped in vec table
 
-      await backend.store({
+      await vecBackend.store({
         id: 'vec-size1',
         key: 'size1',
         content: 'Content 1',
@@ -1076,7 +1099,8 @@ describeCond('BetterSqlite3Backend advanced', () => {
         lastAccessedAt: Date.now(),
       });
 
-      await backend.store({
+      // Mismatched dimension vector - entry stored but vector insertion skipped
+      await vecBackend.store({
         id: 'vec-size2',
         key: 'size2',
         content: 'Content 2',
@@ -1095,10 +1119,11 @@ describeCond('BetterSqlite3Backend advanced', () => {
       });
 
       const queryEmbedding = new Float32Array(8).fill(0.5);
-      const results = await backend.search(queryEmbedding, { k: 10 });
+      const results = await vecBackend.search(queryEmbedding, { k: 10 });
 
-      // Should still return results, mismatched sizes get similarity 0
-      expect(results.length).toBeGreaterThanOrEqual(1);
+      // Only the correctly sized vector should be found via vector search
+      expect(results.length).toBe(1);
+      expect(results[0].entry.id).toBe('vec-size1');
     });
   });
 
@@ -1226,19 +1251,23 @@ describeCond('BetterSqlite3Backend advanced', () => {
   });
 
   describe('health check scenarios', () => {
-    it('should report degraded status when FTS is not available', async () => {
+    it('should report healthy status with different tokenizers', async () => {
       // Create backend with unicode tokenizer (not CJK optimized)
-      const nonCjkBackend = createBetterSqlite3Backend({
+      const unicodeBackend = createBetterSqlite3Backend({
         databasePath: ':memory:',
         ftsTokenizer: 'unicode61',
       });
-      await nonCjkBackend.initialize();
+      await unicodeBackend.initialize();
 
-      const health = await nonCjkBackend.healthCheck();
-      expect(health.components.cache.status).toBe('degraded');
-      expect(health.recommendations.length).toBeGreaterThan(0);
+      const health = await unicodeBackend.healthCheck();
+      // FTS is still available, just not CJK optimized
+      expect(health.components.index.status).toBe('healthy');
+      expect(health.components.index.message).toContain('unicode61');
+      // sqlite-vec should be healthy
+      expect(health.components.cache.status).toBe('healthy');
+      expect(health.components.cache.message).toContain('sqlite-vec');
 
-      await nonCjkBackend.shutdown();
+      await unicodeBackend.shutdown();
     });
   });
 
@@ -1461,6 +1490,666 @@ describeCond('BetterSqlite3Backend advanced', () => {
     it('should return false when deleting non-existent entry', async () => {
       const result = await backend.delete('non-existent-id');
       expect(result).toBe(false);
+    });
+  });
+
+  /**
+   * STRICT TESTS - Bug Catchers for Backend
+   */
+  describe('Strict: SQL Injection Prevention', () => {
+    const injectionPayloads = [
+      "'; DROP TABLE memories; --",
+      "1'; DELETE FROM memories WHERE '1'='1",
+      "Robert'); DROP TABLE memories;--",
+      "1 OR 1=1",
+      "' UNION SELECT * FROM memories --",
+    ];
+
+    injectionPayloads.forEach((payload, idx) => {
+      it(`should safely handle SQL injection attempt #${idx + 1}`, async () => {
+        const entry: MemoryEntry = {
+          id: `injection-test-${idx}`,
+          key: payload,
+          content: payload,
+          type: 'semantic',
+          namespace: payload,
+          tags: [payload],
+          metadata: { payload },
+          accessLevel: 'project',
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+          version: 1,
+          references: [],
+          accessCount: 0,
+          lastAccessedAt: Date.now(),
+        };
+
+        await backend.store(entry);
+        const retrieved = await backend.get(`injection-test-${idx}`);
+
+        expect(retrieved).not.toBeNull();
+        expect(retrieved!.content).toBe(payload);
+        expect(retrieved!.key).toBe(payload);
+
+        // Verify the database still works
+        const count = await backend.count();
+        expect(count).toBeGreaterThan(0);
+      });
+    });
+  });
+
+  describe('Strict: Data Integrity Under Stress', () => {
+    it('should handle rapid sequential writes correctly', async () => {
+      for (let i = 0; i < 100; i++) {
+        await backend.store({
+          id: `rapid-${i}`,
+          key: `key-${i}`,
+          content: `Content ${i}`,
+          type: 'semantic',
+          namespace: 'stress-test',
+          tags: [`tag-${i % 10}`],
+          metadata: { index: i },
+          accessLevel: 'project',
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+          version: 1,
+          references: [],
+          accessCount: 0,
+          lastAccessedAt: Date.now(),
+        });
+      }
+
+      const count = await backend.count('stress-test');
+      expect(count).toBe(100);
+
+      // Verify random entries are intact
+      for (const idx of [0, 25, 50, 75, 99]) {
+        const retrieved = await backend.get(`rapid-${idx}`);
+        expect(retrieved!.content).toBe(`Content ${idx}`);
+        expect(retrieved!.metadata).toEqual({ index: idx });
+      }
+    });
+
+    it('should handle bulk insert correctly', async () => {
+      const entries: MemoryEntry[] = Array.from({ length: 50 }, (_, i) => ({
+        id: `bulk-${i}`,
+        key: `bulk-key-${i}`,
+        content: `Bulk content ${i}`,
+        type: 'semantic' as const,
+        namespace: 'bulk-test',
+        tags: [],
+        metadata: {},
+        accessLevel: 'project' as const,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+        version: 1,
+        references: [],
+        accessCount: 0,
+        lastAccessedAt: Date.now(),
+      }));
+
+      await backend.bulkInsert(entries);
+      const count = await backend.count('bulk-test');
+      expect(count).toBe(50);
+    });
+  });
+
+  describe('Strict: FTS5 Search Accuracy', () => {
+    beforeEach(async () => {
+      const entries = [
+        { id: 'fts-1', content: 'React hooks useEffect useState' },
+        { id: 'fts-2', content: 'Vue composition API reactive ref' },
+        { id: 'fts-3', content: 'Angular dependency injection services' },
+        { id: 'fts-4', content: 'React Native mobile development iOS Android' },
+        { id: 'fts-5', content: 'Node.js Express backend API REST' },
+      ];
+
+      for (const e of entries) {
+        await backend.store({
+          id: e.id,
+          key: e.id,
+          content: e.content,
+          type: 'semantic',
+          namespace: 'fts-test',
+          tags: [],
+          metadata: {},
+          accessLevel: 'project',
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+          version: 1,
+          references: [],
+          accessCount: 0,
+          lastAccessedAt: Date.now(),
+        });
+      }
+    });
+
+    it('should find entries containing search term', async () => {
+      const results = await backend.searchFts('React', { namespace: 'fts-test', limit: 10 });
+      expect(results.length).toBeGreaterThanOrEqual(1);
+      const reactResults = results.filter((r) => r.content.toLowerCase().includes('react'));
+      expect(reactResults.length).toBeGreaterThanOrEqual(1);
+    });
+
+    it('should return results for exact word match', async () => {
+      const results = await backend.searchFts('Angular', { namespace: 'fts-test', limit: 10 });
+      expect(results.length).toBeGreaterThanOrEqual(1);
+      expect(results[0].content).toContain('Angular');
+    });
+  });
+
+  describe('Strict: Update Edge Cases', () => {
+    it('should return null when updating non-existent entry', async () => {
+      const result = await backend.update('non-existent-id', { content: 'New content' });
+      expect(result).toBeNull();
+    });
+
+    it('should update only specified fields', async () => {
+      const original: MemoryEntry = {
+        id: 'update-fields-test',
+        key: 'original-key',
+        content: 'Original content',
+        type: 'semantic',
+        namespace: 'test-ns',
+        tags: ['original-tag'],
+        metadata: { original: true },
+        accessLevel: 'project',
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+        version: 1,
+        references: ['ref-1'],
+        accessCount: 5,
+        lastAccessedAt: Date.now(),
+      };
+
+      await backend.store(original);
+
+      const updated = await backend.update('update-fields-test', {
+        content: 'Updated content',
+      });
+
+      expect(updated!.content).toBe('Updated content');
+      expect(updated!.key).toBe('original-key');
+      expect(updated!.tags).toEqual(['original-tag']);
+      expect(updated!.metadata).toEqual({ original: true });
+      expect(updated!.version).toBe(2);
+    });
+  });
+
+  describe('Strict: Namespace Isolation', () => {
+    it('should correctly count entries per namespace', async () => {
+      await backend.store({
+        id: 'ns-iso-1',
+        key: 'k1',
+        content: 'c1',
+        type: 'semantic',
+        namespace: 'namespace-a',
+        tags: [],
+        metadata: {},
+        accessLevel: 'project',
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+        version: 1,
+        references: [],
+        accessCount: 0,
+        lastAccessedAt: Date.now(),
+      });
+
+      await backend.store({
+        id: 'ns-iso-2',
+        key: 'k2',
+        content: 'c2',
+        type: 'semantic',
+        namespace: 'namespace-a',
+        tags: [],
+        metadata: {},
+        accessLevel: 'project',
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+        version: 1,
+        references: [],
+        accessCount: 0,
+        lastAccessedAt: Date.now(),
+      });
+
+      await backend.store({
+        id: 'ns-iso-3',
+        key: 'k3',
+        content: 'c3',
+        type: 'semantic',
+        namespace: 'namespace-b',
+        tags: [],
+        metadata: {},
+        accessLevel: 'project',
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+        version: 1,
+        references: [],
+        accessCount: 0,
+        lastAccessedAt: Date.now(),
+      });
+
+      expect(await backend.count('namespace-a')).toBe(2);
+      expect(await backend.count('namespace-b')).toBe(1);
+      expect(await backend.count()).toBe(3);
+    });
+
+    it('should clear only target namespace', async () => {
+      await backend.store({
+        id: 'clear-1',
+        key: 'k1',
+        content: 'c1',
+        type: 'semantic',
+        namespace: 'to-clear',
+        tags: [],
+        metadata: {},
+        accessLevel: 'project',
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+        version: 1,
+        references: [],
+        accessCount: 0,
+        lastAccessedAt: Date.now(),
+      });
+
+      await backend.store({
+        id: 'clear-2',
+        key: 'k2',
+        content: 'c2',
+        type: 'semantic',
+        namespace: 'to-keep',
+        tags: [],
+        metadata: {},
+        accessLevel: 'project',
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+        version: 1,
+        references: [],
+        accessCount: 0,
+        lastAccessedAt: Date.now(),
+      });
+
+      const cleared = await backend.clearNamespace('to-clear');
+      expect(cleared).toBe(1);
+
+      expect(await backend.count('to-clear')).toBe(0);
+      expect(await backend.count('to-keep')).toBe(1);
+    });
+  });
+
+  describe('Strict: Statistics Accuracy', () => {
+    it('should report accurate statistics', async () => {
+      await backend.store({
+        id: 'stat-1',
+        key: 'k1',
+        content: 'c1',
+        type: 'semantic',
+        namespace: 'stats-ns',
+        tags: [],
+        metadata: {},
+        accessLevel: 'project',
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+        version: 1,
+        references: [],
+        accessCount: 0,
+        lastAccessedAt: Date.now(),
+      });
+
+      await backend.store({
+        id: 'stat-2',
+        key: 'k2',
+        content: 'c2',
+        type: 'episodic',
+        namespace: 'stats-ns',
+        tags: [],
+        metadata: {},
+        accessLevel: 'project',
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+        version: 1,
+        references: [],
+        accessCount: 0,
+        lastAccessedAt: Date.now(),
+      });
+
+      const stats = await backend.getStats();
+      expect(stats.totalEntries).toBe(2);
+      expect(stats.entriesByNamespace['stats-ns']).toBe(2);
+      expect(stats.entriesByType.semantic).toBe(1);
+      expect(stats.entriesByType.episodic).toBe(1);
+    });
+  });
+
+  describe('Strict: Vector Search with sqlite-vec', () => {
+    let vecBackend: BetterSqlite3Backend;
+
+    beforeEach(async () => {
+      vecBackend = createBetterSqlite3Backend({
+        databasePath: ':memory:',
+        ftsTokenizer: 'trigram',
+        verbose: false,
+        vectorDimensions: 8,
+      });
+      await vecBackend.initialize();
+    });
+
+    afterEach(async () => {
+      await vecBackend.shutdown();
+    });
+
+    it('should return results in similarity order', async () => {
+      const queryVec = new Float32Array([1, 0, 0, 0, 0, 0, 0, 0]);
+      const similarVec = new Float32Array([0.9, 0.1, 0, 0, 0, 0, 0, 0]);
+      const differentVec = new Float32Array([0, 0, 0, 0, 0, 0, 0, 1]);
+
+      await vecBackend.store({
+        id: 'similar',
+        key: 'similar',
+        content: 'Similar content',
+        type: 'semantic',
+        namespace: 'order-test',
+        tags: [],
+        metadata: {},
+        embedding: similarVec,
+        accessLevel: 'project',
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+        version: 1,
+        references: [],
+        accessCount: 0,
+        lastAccessedAt: Date.now(),
+      });
+
+      await vecBackend.store({
+        id: 'different',
+        key: 'different',
+        content: 'Different content',
+        type: 'semantic',
+        namespace: 'order-test',
+        tags: [],
+        metadata: {},
+        embedding: differentVec,
+        accessLevel: 'project',
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+        version: 1,
+        references: [],
+        accessCount: 0,
+        lastAccessedAt: Date.now(),
+      });
+
+      const results = await vecBackend.search(queryVec, { k: 2 });
+      expect(results.length).toBe(2);
+      expect(results[0].entry.id).toBe('similar');
+      expect(results[0].score).toBeGreaterThan(results[1].score);
+    });
+
+    it('should handle concurrent vector operations', async () => {
+      const promises = Array.from({ length: 20 }, (_, i) => {
+        const vec = new Float32Array(8).fill(i / 20);
+        return vecBackend.store({
+          id: `concurrent-vec-${i}`,
+          key: `key-${i}`,
+          content: `Content ${i}`,
+          type: 'semantic',
+          namespace: 'concurrent-test',
+          tags: [],
+          metadata: {},
+          embedding: vec,
+          accessLevel: 'project',
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+          version: 1,
+          references: [],
+          accessCount: 0,
+          lastAccessedAt: Date.now(),
+        });
+      });
+
+      await Promise.all(promises);
+      const count = await vecBackend.count('concurrent-test');
+      expect(count).toBe(20);
+
+      const queryVec = new Float32Array(8).fill(0.5);
+      const results = await vecBackend.search(queryVec, { k: 5 });
+      expect(results.length).toBe(5);
+    });
+  });
+
+  // ==================== STRICT: Concurrent Write Conflict Tests ====================
+  describe('Strict: Concurrent Write Conflicts', () => {
+    it('should handle concurrent updates without data loss', async () => {
+      // Store initial entry
+      const entry: MemoryEntry = {
+        id: 'conflict-test',
+        key: 'conflict-key',
+        content: 'version 1',
+        type: 'factual',
+        namespace: 'conflict-test',
+        tags: ['conflict'],
+        metadata: { version: 1 },
+        accessLevel: 'project',
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+        version: 1,
+        references: [],
+        accessCount: 0,
+        lastAccessedAt: Date.now(),
+      };
+      await backend.store(entry);
+
+      // Attempt concurrent updates
+      const update1 = backend.update('conflict-test', { content: 'version 2' });
+      const update2 = backend.update('conflict-test', { content: 'version 3' });
+
+      // Both should complete without throwing
+      const results = await Promise.allSettled([update1, update2]);
+      expect(results.every(r => r.status === 'fulfilled')).toBe(true);
+
+      // Final state should reflect one of the updates (last write wins)
+      const final = await backend.get('conflict-test');
+      expect(final).not.toBeNull();
+      expect(['version 2', 'version 3']).toContain(final!.content);
+    });
+
+    it('should handle concurrent store and delete without crash', async () => {
+      // Store initial entry
+      const entry: MemoryEntry = {
+        id: 'store-delete-conflict',
+        key: 'sd-key',
+        content: 'to be deleted',
+        type: 'factual',
+        namespace: 'conflict-test',
+        tags: [],
+        metadata: {},
+        accessLevel: 'project',
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+        version: 1,
+        references: [],
+        accessCount: 0,
+        lastAccessedAt: Date.now(),
+      };
+      await backend.store(entry);
+
+      // Concurrent delete and re-store with same ID
+      const newEntry = { ...entry, content: 'new content' };
+      const deleteOp = backend.delete('store-delete-conflict');
+      const storeOp = backend.store(newEntry);
+
+      // Both should complete without throwing
+      const results = await Promise.allSettled([deleteOp, storeOp]);
+      expect(results.every(r => r.status === 'fulfilled')).toBe(true);
+
+      // Entry may or may not exist, but system should be stable
+      const final = await backend.get('store-delete-conflict');
+      if (final !== null) {
+        expect(typeof final.content).toBe('string');
+      }
+    });
+
+    it('should handle rapid sequential updates correctly', async () => {
+      const entry: MemoryEntry = {
+        id: 'rapid-update-test',
+        key: 'rapid-key',
+        content: 'initial',
+        type: 'factual',
+        namespace: 'rapid-test',
+        tags: [],
+        metadata: { counter: 0 },
+        accessLevel: 'project',
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+        version: 1,
+        references: [],
+        accessCount: 0,
+        lastAccessedAt: Date.now(),
+      };
+      await backend.store(entry);
+
+      // Perform 50 rapid updates sequentially
+      for (let i = 1; i <= 50; i++) {
+        await backend.update('rapid-update-test', {
+          content: `update ${i}`,
+          metadata: { counter: i },
+        });
+      }
+
+      // Final state should reflect last update
+      const final = await backend.get('rapid-update-test');
+      expect(final).not.toBeNull();
+      expect(final!.content).toBe('update 50');
+      expect(final!.metadata?.counter).toBe(50);
+    });
+
+    it('should maintain index consistency during concurrent writes', async () => {
+      // Create multiple entries concurrently with same key pattern
+      const promises = [];
+      for (let i = 0; i < 10; i++) {
+        const entry: MemoryEntry = {
+          id: `index-conflict-${i}`,
+          key: `shared-key-${i % 3}`, // Some keys will conflict
+          content: `Content for index ${i}`,
+          type: 'factual',
+          namespace: 'index-conflict-test',
+          tags: ['indexed'],
+          metadata: {},
+          accessLevel: 'project',
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+          version: 1,
+          references: [],
+          accessCount: 0,
+          lastAccessedAt: Date.now(),
+        };
+        promises.push(backend.store(entry));
+      }
+
+      await Promise.all(promises);
+
+      // All entries should be searchable via FTS
+      const results = await backend.searchFts('Content index', { limit: 20 });
+      expect(results.length).toBeGreaterThanOrEqual(1);
+
+      // Each entry should be retrievable by ID
+      for (let i = 0; i < 10; i++) {
+        const entry = await backend.get(`index-conflict-${i}`);
+        expect(entry).not.toBeNull();
+        expect(entry!.id).toBe(`index-conflict-${i}`);
+      }
+    });
+  });
+
+  // ==================== Migration Tests ====================
+  describe('Migration: Embeddings to sqlite-vec', () => {
+    let vecBackend: BetterSqlite3Backend;
+
+    beforeEach(async () => {
+      // Create backend with matching vector dimensions
+      vecBackend = createBetterSqlite3Backend({
+        databasePath: ':memory:',
+        ftsTokenizer: 'trigram',
+        verbose: false,
+        vectorDimensions: 8, // Match test embedding dimensions
+      });
+      await vecBackend.initialize();
+    });
+
+    afterEach(async () => {
+      await vecBackend.shutdown();
+    });
+
+    it('should report no migration needed for new database', async () => {
+      const result = await vecBackend.needsMigration();
+      expect(result.needed).toBe(false);
+      expect(result.count).toBe(0);
+    });
+
+    it('should store entries with embeddings in sqlite-vec automatically', async () => {
+      // Store entry with matching embedding dimensions
+      const embedding = new Float32Array(8).fill(0.5);
+      await vecBackend.store({
+        id: 'migrate-test-1',
+        key: 'key-1',
+        content: 'Content to migrate',
+        type: 'factual',
+        namespace: 'migration-test',
+        tags: [],
+        metadata: {},
+        embedding,
+        accessLevel: 'project',
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+        version: 1,
+        references: [],
+        accessCount: 0,
+        lastAccessedAt: Date.now(),
+      });
+
+      // Entry should be already in sqlite-vec (no migration needed)
+      const beforeMigration = await vecBackend.needsMigration();
+      expect(beforeMigration.needed).toBe(false);
+
+      // Run migration (should be no-op since entry is already indexed)
+      const result = await vecBackend.migrateEmbeddingsToVec();
+      expect(result.migrated).toBe(0);
+      expect(result.errors).toBe(0);
+    });
+
+    it('should return migration stats correctly', async () => {
+      const result = await vecBackend.migrateEmbeddingsToVec();
+
+      expect(typeof result.migrated).toBe('number');
+      expect(typeof result.skipped).toBe('number');
+      expect(typeof result.errors).toBe('number');
+    });
+
+    it('should be searchable via vector after store', async () => {
+      const embedding = new Float32Array(8).fill(0.5);
+      await vecBackend.store({
+        id: 'vec-search-test',
+        key: 'vec-key',
+        content: 'Vector searchable content',
+        type: 'factual',
+        namespace: 'vec-test',
+        tags: [],
+        metadata: {},
+        embedding,
+        accessLevel: 'project',
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+        version: 1,
+        references: [],
+        accessCount: 0,
+        lastAccessedAt: Date.now(),
+      });
+
+      // Search with similar vector
+      const queryVec = new Float32Array(8).fill(0.5);
+      const results = await vecBackend.search(queryVec, { k: 5 });
+      expect(results.length).toBe(1);
+      expect(results[0].entry.id).toBe('vec-search-test');
     });
   });
 });

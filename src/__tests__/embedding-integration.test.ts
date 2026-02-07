@@ -141,7 +141,8 @@ describe('Embedding Integration', () => {
       });
 
       expect(updated).not.toBeNull();
-      expect(updated!.embedding).toBeDefined();
+      expect(updated!.embedding).toBeInstanceOf(Float32Array);
+      expect(updated!.embedding!.length).toBe(384);
 
       // Embedding should be different after content change
       const isDifferent = !originalEmbedding.every(
@@ -333,7 +334,7 @@ describe('Embedding Integration', () => {
 
       const result = await embeddingsService.embed('これは日本語のテストです');
 
-      expect(result.embedding).toBeDefined();
+      expect(result.embedding).toBeInstanceOf(Float32Array);
       expect(result.embedding.length).toBe(384);
     });
 
@@ -345,7 +346,7 @@ describe('Embedding Integration', () => {
 
       const result = await embeddingsService.embed('这是中文测试');
 
-      expect(result.embedding).toBeDefined();
+      expect(result.embedding).toBeInstanceOf(Float32Array);
       expect(result.embedding.length).toBe(384);
     });
 
@@ -460,7 +461,8 @@ describe('Embedding Integration', () => {
         namespace: 'test',
       });
 
-      expect(entry.id).toBeDefined();
+      expect(typeof entry.id).toBe('string');
+      expect(entry.id.length).toBeGreaterThan(0);
       expect(entry.embedding).toBeUndefined();
 
       await service.shutdown();
@@ -474,7 +476,7 @@ describe('Embedding Integration', () => {
 
       // Empty string should still work
       const result = await embeddingsService.embed('');
-      expect(result.embedding).toBeDefined();
+      expect(result.embedding).toBeInstanceOf(Float32Array);
       expect(result.embedding.length).toBe(384);
     });
   });

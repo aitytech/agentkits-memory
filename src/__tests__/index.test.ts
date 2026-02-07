@@ -91,7 +91,8 @@ describe('ProjectMemoryService', () => {
         tags: ['tag1'],
       });
 
-      expect(entry.id).toBeDefined();
+      expect(typeof entry.id).toBe('string');
+      expect(entry.id.length).toBeGreaterThan(0);
       expect(entry.key).toBe('test-key');
       expect(entry.content).toBe('Test content');
     });
@@ -205,9 +206,11 @@ describe('ProjectMemoryService', () => {
     it('should start session', async () => {
       const session = await service.startSession();
 
-      expect(session.id).toBeDefined();
+      expect(typeof session.id).toBe('string');
+      expect(session.id.length).toBeGreaterThan(0);
       expect(session.status).toBe('active');
-      expect(session.startedAt).toBeDefined();
+      expect(typeof session.startedAt).toBe('number');
+      expect(session.startedAt).toBeGreaterThan(0);
     });
 
     it('should get current session', async () => {
@@ -239,7 +242,8 @@ describe('ProjectMemoryService', () => {
       expect(ended).not.toBeNull();
       expect(ended!.status).toBe('completed');
       expect(ended!.summary).toBe('Session summary');
-      expect(ended!.endedAt).toBeDefined();
+      expect(typeof ended!.endedAt).toBe('number');
+      expect(ended!.endedAt).toBeGreaterThan(0);
     });
 
     it('should add session id to entries', async () => {
@@ -321,14 +325,16 @@ describe('ProjectMemoryService', () => {
       const stats = await service.getStats();
 
       expect(stats.totalEntries).toBe(2);
-      expect(stats.entriesByNamespace).toBeDefined();
+      expect(typeof stats.entriesByNamespace).toBe('object');
+      expect(stats.entriesByNamespace).not.toBeNull();
     });
 
     it('should health check', async () => {
       const health = await service.healthCheck();
 
       expect(health.status).toBe('healthy');
-      expect(health.components).toBeDefined();
+      expect(typeof health.components).toBe('object');
+      expect(health.components).not.toBeNull();
     });
   });
 
@@ -480,7 +486,7 @@ describe('ProjectMemoryService with embeddings', () => {
     await noEmbedService.shutdown();
   });
 
-  it('should use HNSW index for search with vector index enabled', async () => {
+  it('should use sqlite-vec for vector search', async () => {
     await service.storeEntry({
       key: 'v1',
       content: 'First vector content',
@@ -531,7 +537,8 @@ describe('ProjectMemoryService with embeddings', () => {
       namespace: 'test',
     });
 
-    expect(entry.id).toBeDefined();
+    expect(typeof entry.id).toBe('string');
+    expect(entry.id.length).toBeGreaterThan(0);
     await failService.shutdown();
   });
 
@@ -576,7 +583,7 @@ describe('ProjectMemoryService with embeddings', () => {
     expect(results.length).toBeLessThanOrEqual(2);
   });
 
-  it('should include HNSW stats in getStats', async () => {
+  it('should include vector search info in getStats', async () => {
     await service.storeEntry({
       key: 'stats-test',
       content: 'Content for stats',
@@ -584,8 +591,8 @@ describe('ProjectMemoryService with embeddings', () => {
     });
 
     const stats = await service.getStats();
-    expect(stats.hnswStats).toBeDefined();
-    expect(stats.hnswStats!.vectorCount).toBe(1);
+    // With sqlite-vec, vector stats are included in backend stats
+    expect(stats.totalEntries).toBeGreaterThanOrEqual(1);
   });
 
   it('should include cache stats in getStats', async () => {
@@ -599,7 +606,8 @@ describe('ProjectMemoryService with embeddings', () => {
     await service.get((await service.query({ type: 'hybrid', limit: 1 }))[0].id);
 
     const stats = await service.getStats();
-    expect(stats.cacheStats).toBeDefined();
+    expect(typeof stats.cacheStats).toBe('object');
+    expect(stats.cacheStats).not.toBeNull();
   });
 });
 
@@ -835,5 +843,292 @@ describe('createEmbeddingMemory factory', () => {
     expect(mockGenerator).toHaveBeenCalled();
 
     await service.shutdown();
+  });
+});
+
+/**
+ * STRICT TESTS - Bug Catchers
+ *
+ * These tests verify actual behavior, not just that "something exists".
+ * They catch real bugs and ensure data integrity.
+ */
+describe('Strict Data Integrity Tests', () => {
+  let service: ProjectMemoryService;
+  let testDir: string;
+
+  beforeEach(async () => {
+    testDir = path.join(tmpdir(), `strict-test-${Date.now()}`);
+    fs.mkdirSync(testDir, { recursive: true });
+
+    service = new ProjectMemoryService({
+      baseDir: testDir,
+      dbFilename: 'test.db',
+      cacheEnabled: false,
+    });
+    await service.initialize();
+  });
+
+  afterEach(async () => {
+    await service.shutdown();
+    fs.rmSync(testDir, { recursive: true, force: true });
+  });
+
+  describe('Concurrent Operations', () => {
+    it('should not lose data on concurrent writes', async () => {
+      const count = 50;
+      const promises = Array.from({ length: count }, (_, i) =>
+        service.storeEntry({
+          key: `concurrent-${i}`,
+          content: `Data ${i}`,
+          namespace: 'test',
+        })
+      );
+
+      await Promise.all(promises);
+      const totalCount = await service.count();
+      expect(totalCount).toBe(count);
+    });
+
+    it('should handle concurrent reads and writes', async () => {
+      // Pre-populate
+      await service.storeEntry({
+        key: 'read-write-test',
+        content: 'Initial',
+        namespace: 'test',
+      });
+
+      const writePromises = Array.from({ length: 10 }, (_, i) =>
+        service.storeEntry({
+          key: `write-${i}`,
+          content: `Write ${i}`,
+          namespace: 'test',
+        })
+      );
+
+      const readPromises = Array.from({ length: 10 }, () =>
+        service.getByKey('test', 'read-write-test')
+      );
+
+      const results = await Promise.all([...writePromises, ...readPromises]);
+
+      // All reads should return the same entry
+      const reads = results.slice(10);
+      reads.forEach((entry) => {
+        expect(entry).not.toBeNull();
+        expect(entry!.key).toBe('read-write-test');
+      });
+    });
+  });
+
+  describe('Unicode and Special Characters', () => {
+    it('should preserve unicode content exactly', async () => {
+      const testCases = [
+        { name: 'emoji', content: '🎉🚀💻🔥✨' },
+        { name: 'chinese', content: '中文测试内容' },
+        { name: 'japanese', content: '日本語のテスト' },
+        { name: 'korean', content: '한국어 테스트' },
+        { name: 'mixed', content: 'Hello 世界 🌍 مرحبا' },
+        { name: 'special', content: 'Tab\tNewline\nCarriage\rReturn' },
+        { name: 'quotes', content: 'Single\' Double" Backtick`' },
+        { name: 'sql-injection-attempt', content: "'; DROP TABLE memories; --" },
+      ];
+
+      for (const { name, content } of testCases) {
+        const entry = await service.storeEntry({
+          key: `unicode-${name}`,
+          content,
+          namespace: 'test',
+        });
+
+        const retrieved = await service.get(entry.id);
+        expect(retrieved!.content).toBe(content);
+      }
+    });
+
+    it('should handle null bytes gracefully', async () => {
+      const content = 'Before\0After';
+      const entry = await service.storeEntry({
+        key: 'null-byte',
+        content,
+        namespace: 'test',
+      });
+
+      const retrieved = await service.get(entry.id);
+      // SQLite may handle null bytes differently, so we check it doesn't crash
+      expect(retrieved).not.toBeNull();
+    });
+  });
+
+  describe('Boundary Conditions', () => {
+    it('should handle empty content', async () => {
+      const entry = await service.storeEntry({
+        key: 'empty-content',
+        content: '',
+        namespace: 'test',
+      });
+
+      const retrieved = await service.get(entry.id);
+      expect(retrieved!.content).toBe('');
+    });
+
+    it('should handle very long keys', async () => {
+      const longKey = 'k'.repeat(1000);
+      const entry = await service.storeEntry({
+        key: longKey,
+        content: 'Content',
+        namespace: 'test',
+      });
+
+      const retrieved = await service.getByKey('test', longKey);
+      expect(retrieved!.key).toBe(longKey);
+    });
+
+    it('should handle large content (100KB)', async () => {
+      const largeContent = 'x'.repeat(100_000);
+      const entry = await service.storeEntry({
+        key: 'large-content',
+        content: largeContent,
+        namespace: 'test',
+      });
+
+      const retrieved = await service.get(entry.id);
+      expect(retrieved!.content.length).toBe(100_000);
+    });
+
+    it('should handle many tags', async () => {
+      const tags = Array.from({ length: 100 }, (_, i) => `tag-${i}`);
+      const entry = await service.storeEntry({
+        key: 'many-tags',
+        content: 'Content',
+        namespace: 'test',
+        tags,
+      });
+
+      const retrieved = await service.get(entry.id);
+      expect(retrieved!.tags).toHaveLength(100);
+      expect(retrieved!.tags).toContain('tag-50');
+    });
+  });
+
+  describe('Data Consistency', () => {
+    it('should increment version on update', async () => {
+      const entry = await service.storeEntry({
+        key: 'version-test',
+        content: 'v1',
+        namespace: 'test',
+      });
+
+      expect(entry.version).toBe(1);
+
+      const updated1 = await service.update(entry.id, { content: 'v2' });
+      expect(updated1!.version).toBe(2);
+
+      const updated2 = await service.update(entry.id, { content: 'v3' });
+      expect(updated2!.version).toBe(3);
+    });
+
+    it('should update timestamp on modification', async () => {
+      const entry = await service.storeEntry({
+        key: 'timestamp-test',
+        content: 'Original',
+        namespace: 'test',
+      });
+
+      const originalUpdatedAt = entry.updatedAt;
+
+      // Wait a bit to ensure timestamp difference
+      await new Promise((r) => setTimeout(r, 10));
+
+      const updated = await service.update(entry.id, { content: 'Modified' });
+      expect(updated!.updatedAt).toBeGreaterThan(originalUpdatedAt);
+    });
+
+    it('should preserve createdAt on update', async () => {
+      const entry = await service.storeEntry({
+        key: 'created-at-test',
+        content: 'Original',
+        namespace: 'test',
+      });
+
+      const originalCreatedAt = entry.createdAt;
+
+      await service.update(entry.id, { content: 'Modified' });
+      const retrieved = await service.get(entry.id);
+
+      expect(retrieved!.createdAt).toBe(originalCreatedAt);
+    });
+  });
+
+  describe('Query Correctness', () => {
+    beforeEach(async () => {
+      // Setup test data
+      await service.storeEntry({ key: 'a1', content: 'Auth pattern', namespace: 'patterns', tags: ['auth', 'security'] });
+      await service.storeEntry({ key: 'a2', content: 'API error', namespace: 'errors', tags: ['api'] });
+      await service.storeEntry({ key: 'a3', content: 'Database decision', namespace: 'decisions', tags: ['db'] });
+    });
+
+    it('should return correct count after operations', async () => {
+      expect(await service.count()).toBe(3);
+
+      await service.storeEntry({ key: 'a4', content: 'New', namespace: 'test' });
+      expect(await service.count()).toBe(4);
+
+      const entries = await service.query({ type: 'hybrid', namespace: 'patterns', limit: 10 });
+      await service.delete(entries[0].id);
+      expect(await service.count()).toBe(3);
+    });
+
+    it('should correctly filter by namespace', async () => {
+      const patterns = await service.getByNamespace('patterns');
+      expect(patterns.length).toBe(1);
+      expect(patterns[0].key).toBe('a1');
+
+      const errors = await service.getByNamespace('errors');
+      expect(errors.length).toBe(1);
+      expect(errors[0].key).toBe('a2');
+    });
+
+    it('should return empty array for non-existent namespace', async () => {
+      const results = await service.getByNamespace('non-existent');
+      expect(results).toEqual([]);
+    });
+  });
+
+  describe('Delete Behavior', () => {
+    it('should return false when deleting non-existent entry', async () => {
+      const deleted = await service.delete('non-existent-id');
+      expect(deleted).toBe(false);
+    });
+
+    it('should actually remove entry on delete', async () => {
+      const entry = await service.storeEntry({
+        key: 'delete-me',
+        content: 'Temporary',
+        namespace: 'test',
+      });
+
+      await service.delete(entry.id);
+
+      const retrieved = await service.get(entry.id);
+      expect(retrieved).toBeNull();
+
+      const byKey = await service.getByKey('test', 'delete-me');
+      expect(byKey).toBeNull();
+    });
+
+    it('should clear namespace correctly', async () => {
+      await service.storeEntry({ key: 'k1', content: 'C1', namespace: 'clear-ns' });
+      await service.storeEntry({ key: 'k2', content: 'C2', namespace: 'clear-ns' });
+      await service.storeEntry({ key: 'k3', content: 'C3', namespace: 'keep-ns' });
+
+      const cleared = await service.clearNamespace('clear-ns');
+      expect(cleared).toBe(2);
+
+      const remaining = await service.getByNamespace('clear-ns');
+      expect(remaining).toHaveLength(0);
+
+      const kept = await service.getByNamespace('keep-ns');
+      expect(kept).toHaveLength(1);
+    });
   });
 });

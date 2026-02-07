@@ -1,16 +1,17 @@
 /**
- * BetterSqlite3Backend - Native SQLite with FTS5 Trigram for CJK Support
+ * BetterSqlite3Backend - Native SQLite with FTS5 Trigram and sqlite-vec
  *
  * Production-grade backend using better-sqlite3 (native SQLite).
  * Provides:
  * - FTS5 with trigram tokenizer for CJK (Japanese, Chinese, Korean)
  * - BM25 ranking for relevance scoring
+ * - sqlite-vec for persisted vector search (no rebuild on startup)
  * - 10x faster than sql.js for large datasets
  * - Proper word segmentation for all languages
  *
  * Requires:
  * - Node.js environment (no browser support)
- * - npm install better-sqlite3
+ * - npm install better-sqlite3 sqlite-vec
  *
  * @module @agentkits/memory/better-sqlite3-backend
  */
@@ -69,6 +70,12 @@ export interface BetterSqlite3BackendConfig {
 
   /** Custom tokenizer name when using extension (e.g., 'lindera_tokenizer') */
   customTokenizer?: string;
+
+  /** Enable sqlite-vec for vector search (default: true) */
+  enableVectorSearch?: boolean;
+
+  /** Vector dimensions for sqlite-vec (default: 384) */
+  vectorDimensions?: number;
 }
 
 /**
@@ -81,6 +88,8 @@ const DEFAULT_CONFIG: BetterSqlite3BackendConfig = {
   maxEntries: 1000000,
   verbose: false,
   ftsTokenizer: 'trigram', // Best for CJK out of the box
+  enableVectorSearch: true,
+  vectorDimensions: 384,
 };
 
 /**
@@ -105,6 +114,7 @@ export class BetterSqlite3Backend extends EventEmitter implements IMemoryBackend
   private db: Database.Database | null = null;
   private initialized: boolean = false;
   private ftsAvailable: boolean = false;
+  private vectorAvailable: boolean = false;
 
   // Performance tracking
   private stats = {
@@ -178,6 +188,11 @@ export class BetterSqlite3Backend extends EventEmitter implements IMemoryBackend
 
     // Create FTS5 table with appropriate tokenizer
     this.createFtsTable();
+
+    // Load sqlite-vec extension and create vector table
+    if (this.config.enableVectorSearch) {
+      await this.initializeSqliteVec();
+    }
 
     this.initialized = true;
     this.emit('initialized');
@@ -333,6 +348,48 @@ export class BetterSqlite3Backend extends EventEmitter implements IMemoryBackend
   }
 
   /**
+   * Check if vector search is available (sqlite-vec loaded)
+   */
+  isVectorAvailable(): boolean {
+    return this.vectorAvailable;
+  }
+
+  /**
+   * Initialize sqlite-vec extension and create vector table
+   */
+  private async initializeSqliteVec(): Promise<void> {
+    if (!this.db) throw new Error('Database not initialized');
+
+    try {
+      // Dynamic import for sqlite-vec
+      const sqliteVec = await import('sqlite-vec');
+
+      // Load the extension
+      sqliteVec.load(this.db);
+
+      const dimensions = this.config.vectorDimensions || 384;
+
+      // Create vec0 virtual table for vector storage
+      // Using float32 for full precision
+      this.db.exec(`
+        CREATE VIRTUAL TABLE IF NOT EXISTS memory_vectors USING vec0(
+          embedding float[${dimensions}]
+        )
+      `);
+
+      this.vectorAvailable = true;
+
+      if (this.config.verbose) {
+        console.log(`[BetterSqlite3] sqlite-vec initialized with ${dimensions} dimensions`);
+      }
+    } catch (error) {
+      console.warn(`[BetterSqlite3] sqlite-vec initialization failed: ${error}`);
+      console.warn('[BetterSqlite3] Falling back to brute-force vector search');
+      this.vectorAvailable = false;
+    }
+  }
+
+  /**
    * Shutdown the backend
    */
   async shutdown(): Promise<void> {
@@ -360,7 +417,7 @@ export class BetterSqlite3Backend extends EventEmitter implements IMemoryBackend
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
-    stmt.run(
+    const result = stmt.run(
       entry.id,
       entry.key,
       entry.content,
@@ -368,7 +425,9 @@ export class BetterSqlite3Backend extends EventEmitter implements IMemoryBackend
       entry.namespace,
       JSON.stringify(entry.tags),
       JSON.stringify(entry.metadata),
-      entry.embedding ? Buffer.from(entry.embedding.buffer) : null,
+      entry.embedding
+        ? Buffer.from(entry.embedding.buffer, entry.embedding.byteOffset, entry.embedding.byteLength)
+        : null,
       entry.sessionId || null,
       entry.ownerId || null,
       entry.accessLevel,
@@ -380,6 +439,29 @@ export class BetterSqlite3Backend extends EventEmitter implements IMemoryBackend
       entry.accessCount,
       entry.lastAccessedAt
     );
+
+    // Store vector in sqlite-vec table if available and embedding exists
+    if (this.vectorAvailable && entry.embedding) {
+      // Get the rowid for the entry
+      const rowResult = this.db.prepare('SELECT rowid FROM memory_entries WHERE id = ?').get(entry.id) as { rowid: number | bigint } | undefined;
+      if (rowResult) {
+        try {
+          // Convert rowid to number (better-sqlite3 may return bigint)
+          const rowid = Number(rowResult.rowid);
+          // Delete existing vector if any (for REPLACE case)
+          this.db.exec(`DELETE FROM memory_vectors WHERE rowid = ${rowid}`);
+          // Insert new vector - sqlite-vec accepts JSON array format
+          const vectorJson = JSON.stringify(Array.from(entry.embedding));
+          // Use exec with direct SQL to avoid prepared statement issues with sqlite-vec
+          this.db.exec(`INSERT INTO memory_vectors(rowid, embedding) VALUES (${rowid}, '${vectorJson}')`);
+        } catch (error) {
+          // Skip vector insertion on dimension mismatch or other errors
+          if (this.config.verbose) {
+            console.warn(`[BetterSqlite3] Vector insertion skipped for ${entry.id}: ${error}`);
+          }
+        }
+      }
+    }
 
     const duration = Date.now() - startTime;
     this.stats.writeCount++;
@@ -457,7 +539,16 @@ export class BetterSqlite3Backend extends EventEmitter implements IMemoryBackend
   async delete(id: string): Promise<boolean> {
     if (!this.db) throw new Error('Database not initialized');
 
+    // Get rowid before deletion for vector cleanup
+    const rowResult = this.db.prepare('SELECT rowid FROM memory_entries WHERE id = ?').get(id) as { rowid: number | bigint } | undefined;
+
     const result = this.db.prepare('DELETE FROM memory_entries WHERE id = ?').run(id);
+
+    // Delete from vector table if applicable
+    if (result.changes > 0 && this.vectorAvailable && rowResult) {
+      this.db.prepare('DELETE FROM memory_vectors WHERE rowid = ?').run(Number(rowResult.rowid));
+    }
+
     return result.changes > 0;
   }
 
@@ -615,12 +706,90 @@ export class BetterSqlite3Backend extends EventEmitter implements IMemoryBackend
   }
 
   /**
-   * Semantic vector search
+   * Semantic vector search using sqlite-vec (KNN) or brute-force fallback
    */
   async search(embedding: Float32Array, options: SearchOptions): Promise<SearchResult[]> {
     if (!this.db) throw new Error('Database not initialized');
 
     const startTime = Date.now();
+
+    // Use sqlite-vec KNN search if available
+    if (this.vectorAvailable) {
+      return this.searchWithSqliteVec(embedding, options, startTime);
+    }
+
+    // Fallback to brute-force search
+    return this.searchBruteForce(embedding, options, startTime);
+  }
+
+  /**
+   * Fast KNN search using sqlite-vec
+   */
+  private searchWithSqliteVec(
+    embedding: Float32Array,
+    options: SearchOptions,
+    startTime: number
+  ): SearchResult[] {
+    if (!this.db) throw new Error('Database not initialized');
+
+    const k = options.k || 10;
+
+    // sqlite-vec KNN query - accepts JSON array format
+    const queryJson = JSON.stringify(Array.from(embedding));
+    const vecResults = this.db.prepare(`
+      SELECT
+        v.rowid,
+        v.distance
+      FROM memory_vectors v
+      WHERE v.embedding MATCH ?
+      ORDER BY v.distance
+      LIMIT ?
+    `).all(queryJson, k) as { rowid: number; distance: number }[];
+
+    // Fetch full entries and apply filters
+    const results: SearchResult[] = [];
+    for (const { rowid, distance } of vecResults) {
+      const row = this.db.prepare('SELECT * FROM memory_entries WHERE rowid = ?').get(rowid) as Record<string, unknown> | undefined;
+      if (!row) continue;
+
+      const entry = this.rowToEntry(row);
+
+      // Apply namespace filter
+      if (options.filters?.namespace && entry.namespace !== options.filters.namespace) {
+        continue;
+      }
+
+      // Apply type filter
+      if (options.filters?.memoryType && entry.type !== options.filters.memoryType) {
+        continue;
+      }
+
+      // Convert distance to similarity (cosine distance = 1 - similarity)
+      const similarity = 1 - distance;
+
+      // Apply threshold
+      if (options.threshold !== undefined && similarity < options.threshold) {
+        continue;
+      }
+
+      results.push({ entry, score: similarity, distance });
+    }
+
+    this.stats.queryCount++;
+    this.stats.totalQueryTime += Date.now() - startTime;
+
+    return results;
+  }
+
+  /**
+   * Brute-force vector search fallback
+   */
+  private searchBruteForce(
+    embedding: Float32Array,
+    options: SearchOptions,
+    startTime: number
+  ): SearchResult[] {
+    if (!this.db) throw new Error('Database not initialized');
 
     // Get all entries with embeddings
     let sql = `
@@ -704,6 +873,8 @@ export class BetterSqlite3Backend extends EventEmitter implements IMemoryBackend
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
+    const getRowid = this.db.prepare('SELECT rowid FROM memory_entries WHERE id = ?');
+
     const insert = this.db.transaction((entries: MemoryEntry[]) => {
       for (const entry of entries) {
         stmt.run(
@@ -714,7 +885,9 @@ export class BetterSqlite3Backend extends EventEmitter implements IMemoryBackend
           entry.namespace,
           JSON.stringify(entry.tags),
           JSON.stringify(entry.metadata),
-          entry.embedding ? Buffer.from(entry.embedding.buffer) : null,
+          entry.embedding
+            ? Buffer.from(entry.embedding.buffer, entry.embedding.byteOffset, entry.embedding.byteLength)
+            : null,
           entry.sessionId || null,
           entry.ownerId || null,
           entry.accessLevel,
@@ -726,6 +899,25 @@ export class BetterSqlite3Backend extends EventEmitter implements IMemoryBackend
           entry.accessCount,
           entry.lastAccessedAt
         );
+
+        // Store vector in sqlite-vec table if available and embedding exists
+        if (this.vectorAvailable && entry.embedding) {
+          const rowResult = getRowid.get(entry.id) as { rowid: number | bigint } | undefined;
+          if (rowResult) {
+            try {
+              const rowid = Number(rowResult.rowid);
+              // Use exec for sqlite-vec (prepared statements don't work correctly)
+              this.db!.exec(`DELETE FROM memory_vectors WHERE rowid = ${rowid}`);
+              const vectorJson = JSON.stringify(Array.from(entry.embedding));
+              this.db!.exec(`INSERT INTO memory_vectors(rowid, embedding) VALUES (${rowid}, '${vectorJson}')`);
+            } catch (error) {
+              // Skip vector insertion on dimension mismatch or other errors
+              if (this.config.verbose) {
+                console.warn(`[BetterSqlite3] Vector insertion skipped for ${entry.id}: ${error}`);
+              }
+            }
+          }
+        }
       }
     });
 
@@ -740,10 +932,25 @@ export class BetterSqlite3Backend extends EventEmitter implements IMemoryBackend
     if (!this.db) throw new Error('Database not initialized');
     if (ids.length === 0) return 0;
 
+    // Get rowids before deletion for vector cleanup
     const placeholders = ids.map(() => '?').join(', ');
+    let rowids: number[] = [];
+    if (this.vectorAvailable) {
+      const rows = this.db
+        .prepare(`SELECT rowid FROM memory_entries WHERE id IN (${placeholders})`)
+        .all(...ids) as { rowid: number | bigint }[];
+      rowids = rows.map(r => Number(r.rowid));
+    }
+
     const result = this.db
       .prepare(`DELETE FROM memory_entries WHERE id IN (${placeholders})`)
       .run(...ids);
+
+    // Delete vectors if applicable
+    if (this.vectorAvailable && rowids.length > 0) {
+      const vecPlaceholders = rowids.map(() => '?').join(', ');
+      this.db.prepare(`DELETE FROM memory_vectors WHERE rowid IN (${vecPlaceholders})`).run(...rowids);
+    }
 
     return result.changes;
   }
@@ -786,9 +993,24 @@ export class BetterSqlite3Backend extends EventEmitter implements IMemoryBackend
   async clearNamespace(namespace: string): Promise<number> {
     if (!this.db) throw new Error('Database not initialized');
 
+    // Get rowids before deletion for vector cleanup
+    let rowids: number[] = [];
+    if (this.vectorAvailable) {
+      const rows = this.db
+        .prepare('SELECT rowid FROM memory_entries WHERE namespace = ?')
+        .all(namespace) as { rowid: number | bigint }[];
+      rowids = rows.map(r => Number(r.rowid));
+    }
+
     const result = this.db
       .prepare('DELETE FROM memory_entries WHERE namespace = ?')
       .run(namespace);
+
+    // Delete vectors if applicable
+    if (this.vectorAvailable && rowids.length > 0) {
+      const placeholders = rowids.map(() => '?').join(', ');
+      this.db.prepare(`DELETE FROM memory_vectors WHERE rowid IN (${placeholders})`).run(...rowids);
+    }
 
     return result.changes;
   }
@@ -884,16 +1106,16 @@ export class BetterSqlite3Backend extends EventEmitter implements IMemoryBackend
       recommendations.push('Enable FTS5 for better search performance');
     }
 
-    // Check CJK optimization (cache - repurpose for CJK status)
+    // Check vector search (sqlite-vec)
     const cacheHealth: ComponentHealth = {
-      status: this.isCjkOptimized() ? 'healthy' : 'degraded',
+      status: this.vectorAvailable ? 'healthy' : 'degraded',
       latency: 0,
-      message: this.isCjkOptimized()
-        ? 'Trigram tokenizer active for CJK'
-        : 'CJK using fallback search',
+      message: this.vectorAvailable
+        ? `sqlite-vec active (${this.config.vectorDimensions || 384} dimensions)`
+        : 'sqlite-vec not available, using brute-force search',
     };
-    if (!this.isCjkOptimized()) {
-      recommendations.push('Use trigram tokenizer for proper CJK (Japanese/Chinese/Korean) support');
+    if (!this.vectorAvailable) {
+      recommendations.push('Install sqlite-vec for faster vector search');
     }
 
     // Determine overall status
@@ -969,6 +1191,82 @@ export class BetterSqlite3Backend extends EventEmitter implements IMemoryBackend
       accessCount: row.access_count as number,
       lastAccessedAt: row.last_accessed_at as number,
     };
+  }
+
+  /**
+   * Migrate existing embeddings to sqlite-vec index.
+   * Call this to index entries that have embeddings but are not yet in the vector index.
+   *
+   * @returns Number of entries migrated
+   */
+  async migrateEmbeddingsToVec(): Promise<{ migrated: number; skipped: number; errors: number }> {
+    if (!this.db) throw new Error('Database not initialized');
+    if (!this.vectorAvailable) {
+      console.warn('[Migration] sqlite-vec not available, skipping migration');
+      return { migrated: 0, skipped: 0, errors: 0 };
+    }
+
+    let migrated = 0;
+    let skipped = 0;
+    let errors = 0;
+
+    // Find entries with embeddings that are not in memory_vectors
+    const entriesWithEmbeddings = this.db.prepare(`
+      SELECT e.rowid, e.id, e.embedding
+      FROM memory_entries e
+      LEFT JOIN memory_vectors v ON e.rowid = v.rowid
+      WHERE e.embedding IS NOT NULL AND v.rowid IS NULL
+    `).all() as Array<{ rowid: number | bigint; id: string; embedding: Buffer | null }>;
+
+    console.log(`[Migration] Found ${entriesWithEmbeddings.length} entries to migrate to sqlite-vec`);
+
+    for (const row of entriesWithEmbeddings) {
+      try {
+        if (!row.embedding) {
+          skipped++;
+          continue;
+        }
+
+        // Parse embedding from BLOB
+        const float32 = new Float32Array(row.embedding.buffer, row.embedding.byteOffset, row.embedding.byteLength / 4);
+        const vectorJson = JSON.stringify(Array.from(float32));
+        const rowid = Number(row.rowid);
+
+        // Insert into sqlite-vec
+        this.db.exec(`INSERT OR REPLACE INTO memory_vectors(rowid, embedding) VALUES (${rowid}, '${vectorJson}')`);
+        migrated++;
+
+        // Log progress every 100 entries
+        if (migrated % 100 === 0) {
+          console.log(`[Migration] Migrated ${migrated}/${entriesWithEmbeddings.length} entries...`);
+        }
+      } catch (err) {
+        console.error(`[Migration] Error migrating entry ${row.id}:`, err);
+        errors++;
+      }
+    }
+
+    console.log(`[Migration] Complete: ${migrated} migrated, ${skipped} skipped, ${errors} errors`);
+    return { migrated, skipped, errors };
+  }
+
+  /**
+   * Check if migration is needed (entries with embeddings not in sqlite-vec)
+   */
+  async needsMigration(): Promise<{ needed: boolean; count: number }> {
+    if (!this.db) throw new Error('Database not initialized');
+    if (!this.vectorAvailable) {
+      return { needed: false, count: 0 };
+    }
+
+    const result = this.db.prepare(`
+      SELECT COUNT(*) as count
+      FROM memory_entries e
+      LEFT JOIN memory_vectors v ON e.rowid = v.rowid
+      WHERE e.embedding IS NOT NULL AND v.rowid IS NULL
+    `).get() as { count: number };
+
+    return { needed: result.count > 0, count: result.count };
   }
 }
 

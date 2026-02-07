@@ -274,7 +274,7 @@ export class PersistentEmbeddingCache {
   }
 
   /**
-   * Get all cached embeddings (for warm-starting HNSW index)
+   * Get all cached embeddings
    */
   getAllEmbeddings(): Array<{ hash: string; embedding: Float32Array }> {
     const now = Date.now();

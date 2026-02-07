@@ -57,7 +57,7 @@
 | **Serveur MCP** | 9 outils : save, search, timeline, details, recall, list, update, delete, status |
 | **Capture Automatique** | Les hooks capturent automatiquement le contexte de session, l'utilisation des outils et les résumés |
 | **Enrichissement IA** | Les workers en arrière-plan enrichissent les observations avec des résumés générés par IA |
-| **Recherche Vectorielle** | Similarité sémantique HNSW avec embeddings multilingues (100+ langues) |
+| **Recherche Vectorielle** | Similarité sémantique sqlite-vec avec embeddings multilingues (100+ langues) |
 | **Interface Web** | Interface navigateur pour visualiser, rechercher, ajouter, modifier et supprimer des mémoires |
 | **Recherche en 3 Couches** | La divulgation progressive économise ~87% de tokens vs tout récupérer |
 | **Gestion du Cycle de Vie** | Compression, archivage et nettoyage automatiques des anciennes sessions |
@@ -634,7 +634,7 @@ AgentKits Memory est rigoureusement testé avec **970 tests unitaires** réparti
 |-----------|-------|-----------|
 | Service Mémoire Core | 56 | CRUD, recherche, pagination, catégories, tags, import/export |
 | Backend SQLite | 65 | Schéma, migrations, FTS5, transactions, gestion d'erreurs |
-| Index Vectoriel HNSW | 47 | Insertion, recherche, suppression, persistance, cas limites |
+| Index Vectoriel sqlite-vec | 47 | Insertion, recherche, suppression, persistance, cas limites |
 | Recherche Hybride | 44 | FTS + fusion vectorielle, scoring, classement, filtres |
 | Économie de Tokens | 27 | Budgets de recherche 3 couches, troncature, optimisation |
 | Système d'Embeddings | 63 | Cache, sous-processus, modèles locaux, support CJK |

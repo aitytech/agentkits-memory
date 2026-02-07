@@ -2,8 +2,8 @@
  * @agentkits/memory - Project-Scoped Memory System
  *
  * Provides persistent memory for Claude Code sessions within a project.
- * Stores data in .claude/memory/memory.db using SQLite with optional
- * HNSW vector indexing for semantic search.
+ * Stores data in .claude/memory/memory.db using SQLite with sqlite-vec
+ * for vector indexing and semantic search.
  *
  * @module @agentkits/memory
  *
@@ -63,12 +63,10 @@ import {
 } from './types.js';
 import { BetterSqlite3Backend } from './better-sqlite3-backend.js';
 import { CacheManager } from './cache-manager.js';
-import { HNSWIndex } from './hnsw-index.js';
 
 // Re-export types
 export * from './types.js';
 export { CacheManager, TieredCacheManager } from './cache-manager.js';
-export { HNSWIndex } from './hnsw-index.js';
 export {
   LocalEmbeddingsService,
   createLocalEmbeddings,
@@ -91,16 +89,18 @@ export {
 } from './better-sqlite3-backend.js';
 
 /**
- * Create a better-sqlite3 backend with FTS5 trigram tokenizer for CJK support
+ * Create a better-sqlite3 backend with FTS5 trigram tokenizer and sqlite-vec
  */
 export function createAutoBackend(
   databasePath: string,
-  options: { verbose?: boolean } = {}
+  options: { verbose?: boolean; dimensions?: number } = {}
 ): IMemoryBackend {
   return new BetterSqlite3Backend({
     databasePath,
     ftsTokenizer: 'trigram', // Full CJK support
     verbose: options.verbose,
+    enableVectorSearch: true,
+    vectorDimensions: options.dimensions || 384,
   });
 }
 
@@ -114,8 +114,11 @@ export interface ProjectMemoryConfig {
   /** Database filename (default: memory.db) */
   dbFilename: string;
 
-  /** Enable HNSW vector indexing */
-  enableVectorIndex: boolean;
+  /**
+   * @deprecated This option is kept for backwards compatibility but has no effect.
+   * Vector search is now handled by sqlite-vec in the backend.
+   */
+  enableVectorIndex?: boolean;
 
   /** Vector dimensions for embeddings (default: 384 for local models) */
   dimensions: number;
@@ -148,7 +151,6 @@ export interface ProjectMemoryConfig {
 const DEFAULT_CONFIG: ProjectMemoryConfig = {
   baseDir: '.claude/memory',
   dbFilename: 'memory.db',
-  enableVectorIndex: false, // Disabled by default for performance
   dimensions: 384, // Local model dimensions (e.g., all-MiniLM-L6-v2)
   cacheEnabled: true,
   cacheSize: 1000,
@@ -164,7 +166,7 @@ const DEFAULT_CONFIG: ProjectMemoryConfig = {
  * High-level interface for project memory that provides:
  * - Persistent storage in .claude/memory/memory.db
  * - Session tracking and checkpoints
- * - Optional semantic search with HNSW indexing
+ * - Vector search with sqlite-vec (persisted, no rebuild needed)
  * - Migration from existing markdown files
  * - Backward-compatible markdown exports
  */
@@ -172,7 +174,6 @@ export class ProjectMemoryService extends EventEmitter implements IMemoryBackend
   private config: ProjectMemoryConfig;
   private backend: IMemoryBackend | null = null;
   private cache: CacheManager<MemoryEntry> | null = null;
-  private vectorIndex: HNSWIndex | null = null;
   private initialized: boolean = false;
   private currentSession: SessionInfo | null = null;
 
@@ -202,16 +203,7 @@ export class ProjectMemoryService extends EventEmitter implements IMemoryBackend
       });
     }
 
-    // Initialize vector index if enabled
-    if (this.config.enableVectorIndex) {
-      this.vectorIndex = new HNSWIndex({
-        dimensions: this.config.dimensions,
-        M: 16,
-        efConstruction: 200,
-        maxElements: this.config.maxEntries,
-        metric: 'cosine',
-      });
-    }
+    // Note: Vector search is handled by sqlite-vec in the backend
   }
 
   // ===== Lifecycle =====
@@ -219,9 +211,15 @@ export class ProjectMemoryService extends EventEmitter implements IMemoryBackend
   async initialize(): Promise<void> {
     if (this.initialized) return;
 
-    // Create backend with better-sqlite3 (FTS5 trigram tokenizer for CJK support)
+    // Create backend with better-sqlite3 (FTS5 trigram + sqlite-vec for vector search)
     const dbPath = path.join(this.config.baseDir, this.config.dbFilename);
-    this.backend = createAutoBackend(dbPath, { verbose: this.config.verbose });
+    this.backend = new BetterSqlite3Backend({
+      databasePath: dbPath,
+      ftsTokenizer: 'trigram',
+      verbose: this.config.verbose,
+      enableVectorSearch: true,
+      vectorDimensions: this.config.dimensions,
+    });
 
     // Forward backend events (if backend is an EventEmitter)
     const backendAsEmitter = this.backend as unknown as EventEmitter | undefined;
@@ -234,10 +232,7 @@ export class ProjectMemoryService extends EventEmitter implements IMemoryBackend
 
     await this.backend.initialize();
 
-    // Rebuild vector index from existing embeddings
-    if (this.vectorIndex) {
-      await this.rebuildVectorIndex();
-    }
+    // Note: No need to rebuild vector index - sqlite-vec persists to disk
 
     this.initialized = true;
     this.emit('initialized', { dbPath: path.join(this.config.baseDir, this.config.dbFilename) });
@@ -263,6 +258,31 @@ export class ProjectMemoryService extends EventEmitter implements IMemoryBackend
     this.emit('shutdown');
   }
 
+  // ===== Migration Methods =====
+
+  /**
+   * Check if migration is needed (entries with embeddings not yet indexed in sqlite-vec)
+   */
+  async needsMigration(): Promise<{ needed: boolean; count: number }> {
+    const backend = this.ensureInitialized();
+    if ('needsMigration' in backend && typeof backend.needsMigration === 'function') {
+      return backend.needsMigration();
+    }
+    return { needed: false, count: 0 };
+  }
+
+  /**
+   * Migrate existing embeddings to sqlite-vec index.
+   * Call this to index any entries that have embeddings but are not yet in the vector index.
+   */
+  async migrateEmbeddingsToVec(): Promise<{ migrated: number; skipped: number; errors: number }> {
+    const backend = this.ensureInitialized();
+    if ('migrateEmbeddingsToVec' in backend && typeof backend.migrateEmbeddingsToVec === 'function') {
+      return backend.migrateEmbeddingsToVec();
+    }
+    return { migrated: 0, skipped: 0, errors: 0 };
+  }
+
   // ===== IMemoryBackend Implementation =====
 
   async store(entry: MemoryEntry): Promise<void> {
@@ -284,18 +304,13 @@ export class ProjectMemoryService extends EventEmitter implements IMemoryBackend
       entry.sessionId = this.currentSession.id;
     }
 
-    // Store in backend
+    // Store in backend (sqlite-vec handles vector storage automatically)
     await backend.store(entry);
 
     // Update cache
     if (this.cache) {
       this.cache.set(entry.id, entry);
       this.cache.set(`${entry.namespace}:${entry.key}`, entry);
-    }
-
-    // Add to vector index
-    if (this.vectorIndex && entry.embedding) {
-      await this.vectorIndex.addPoint(entry.id, entry.embedding);
     }
   }
 
@@ -350,13 +365,8 @@ export class ProjectMemoryService extends EventEmitter implements IMemoryBackend
       if (update.content && this.config.embeddingGenerator) {
         try {
           updated.embedding = await this.config.embeddingGenerator(updated.content);
+          // Store will automatically update sqlite-vec
           await backend.store(updated);
-
-          // Update vector index
-          if (this.vectorIndex && updated.embedding) {
-            await this.vectorIndex.removePoint(id);
-            await this.vectorIndex.addPoint(id, updated.embedding);
-          }
         } catch {
           // Ignore embedding errors
         }
@@ -378,6 +388,7 @@ export class ProjectMemoryService extends EventEmitter implements IMemoryBackend
     const entry = await this.get(id);
     if (!entry) return false;
 
+    // Backend delete will automatically clean up sqlite-vec
     const result = await backend.delete(id);
 
     if (result) {
@@ -385,11 +396,6 @@ export class ProjectMemoryService extends EventEmitter implements IMemoryBackend
       if (this.cache) {
         this.cache.delete(id);
         this.cache.delete(`${entry.namespace}:${entry.key}`);
-      }
-
-      // Remove from vector index
-      if (this.vectorIndex) {
-        await this.vectorIndex.removePoint(id);
       }
     }
 
@@ -528,26 +534,7 @@ export class ProjectMemoryService extends EventEmitter implements IMemoryBackend
   async search(embedding: Float32Array, options: SearchOptions): Promise<SearchResult[]> {
     const backend = this.ensureInitialized();
 
-    if (this.vectorIndex) {
-      // Use HNSW index for fast search
-      const results = await this.vectorIndex.search(embedding, options.k);
-
-      // Fetch full entries and apply threshold
-      const searchResults: SearchResult[] = [];
-      for (const { id, distance } of results) {
-        const entry = await this.get(id);
-        if (entry) {
-          const score = 1 - distance; // Convert distance to similarity
-          if (!options.threshold || score >= options.threshold) {
-            searchResults.push({ entry, score, distance });
-          }
-        }
-      }
-
-      return searchResults;
-    }
-
-    // Fallback to brute-force search in backend
+    // Use backend's sqlite-vec search (or brute-force fallback)
     return backend.search(embedding, options);
   }
 
@@ -598,11 +585,6 @@ export class ProjectMemoryService extends EventEmitter implements IMemoryBackend
     const backend = this.ensureInitialized();
 
     const stats = await backend.getStats();
-
-    // Add HNSW stats if available
-    if (this.vectorIndex) {
-      stats.hnswStats = this.vectorIndex.getStats();
-    }
 
     // Add cache stats if available
     if (this.cache) {
@@ -790,31 +772,6 @@ export class ProjectMemoryService extends EventEmitter implements IMemoryBackend
     }
     return this.backend;
   }
-
-  private async rebuildVectorIndex(): Promise<void> {
-    if (!this.vectorIndex || !this.backend) return;
-
-    // Get all entries with embeddings (use backend directly to avoid ensureInitialized check)
-    const entries = await this.backend.query({
-      type: 'hybrid',
-      limit: this.config.maxEntries,
-    });
-
-    const entriesWithEmbeddings = entries.filter((e) => e.embedding);
-
-    if (entriesWithEmbeddings.length > 0) {
-      await this.vectorIndex.rebuild(
-        entriesWithEmbeddings.map((e) => ({
-          id: e.id,
-          vector: e.embedding!,
-        }))
-      );
-
-      if (this.config.verbose) {
-        console.log(`Rebuilt vector index with ${entriesWithEmbeddings.length} entries`);
-      }
-    }
-  }
 }
 
 // ===== Factory Functions =====
@@ -841,7 +798,6 @@ export function createEmbeddingMemory(
     baseDir,
     embeddingGenerator,
     dimensions,
-    enableVectorIndex: true,
   });
 }
 

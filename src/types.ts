@@ -230,76 +230,6 @@ export interface SearchOptions {
   filters?: Partial<MemoryQuery>;
 }
 
-// ===== HNSW Index Types =====
-
-/**
- * Quantization type
- */
-export type QuantizationType = 'scalar' | 'product' | 'binary' | 'none';
-
-/**
- * Quantization configuration for vector compression
- */
-export interface QuantizationConfig {
-  /** Enable quantization */
-  enabled: boolean;
-
-  /** Number of bits per dimension (default: 8) */
-  bits: number;
-
-  /** Quantization method */
-  method: 'scalar' | 'product';
-
-  /** Quantization type (alternative to method) */
-  type?: QuantizationType;
-
-  /** Number of subquantizers for product quantization */
-  subquantizers?: number;
-}
-
-/**
- * HNSW index configuration
- */
-export interface HNSWConfig {
-  /** Vector dimensions (e.g., 384 for local models, 1536 for OpenAI) */
-  dimensions: number;
-
-  /** Maximum number of connections per layer (default: 16) */
-  M: number;
-
-  /** Size of the dynamic candidate list during construction (default: 200) */
-  efConstruction: number;
-
-  /** Maximum elements the index can hold */
-  maxElements: number;
-
-  /** Distance metric */
-  metric: DistanceMetric;
-
-  /** Quantization configuration */
-  quantization?: QuantizationConfig;
-}
-
-/**
- * HNSW index statistics
- */
-export interface HNSWStats {
-  /** Total number of vectors in the index */
-  vectorCount: number;
-
-  /** Memory usage in bytes */
-  memoryUsage: number;
-
-  /** Average search time in milliseconds */
-  avgSearchTime: number;
-
-  /** Index build time in milliseconds */
-  buildTime: number;
-
-  /** Compression ratio if quantization is enabled */
-  compressionRatio?: number;
-}
-
 // ===== Backend Interface =====
 
 /**
@@ -370,9 +300,6 @@ export interface BackendStats {
 
   /** Total memory usage in bytes */
   memoryUsage: number;
-
-  /** HNSW index statistics */
-  hnswStats?: HNSWStats;
 
   /** Cache statistics */
   cacheStats?: CacheStats;

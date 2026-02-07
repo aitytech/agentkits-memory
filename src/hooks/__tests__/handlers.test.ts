@@ -146,7 +146,8 @@ describe('Hook Handlers', () => {
 
       expect(result.continue).toBe(true);
       expect(result.suppressOutput).toBe(true);
-      expect(result.error).toBeDefined();
+      expect(typeof result.error).toBe('string');
+      expect(result.error!.length).toBeGreaterThan(0);
     });
   });
 
@@ -232,7 +233,8 @@ describe('Hook Handlers', () => {
 
       expect(result.continue).toBe(true);
       expect(result.suppressOutput).toBe(true);
-      expect(result.error).toBeDefined();
+      expect(typeof result.error).toBe('string');
+      expect(result.error!.length).toBeGreaterThan(0);
     });
   });
 
@@ -359,9 +361,9 @@ describe('Hook Handlers', () => {
       await service.shutdown();
 
       expect(observations.length).toBe(1);
-      expect(observations[0].subtitle).toBeDefined();
+      expect(typeof observations[0].subtitle).toBe('string');
       expect(observations[0].subtitle.length).toBeGreaterThan(0);
-      expect(observations[0].narrative).toBeDefined();
+      expect(typeof observations[0].narrative).toBe('string');
       expect(observations[0].narrative.length).toBeGreaterThan(0);
     });
 
@@ -454,7 +456,8 @@ describe('Hook Handlers', () => {
 
       expect(result.continue).toBe(true);
       expect(result.suppressOutput).toBe(true);
-      expect(result.error).toBeDefined();
+      expect(typeof result.error).toBe('string');
+      expect(result.error!.length).toBeGreaterThan(0);
     });
   });
 
@@ -484,7 +487,7 @@ describe('Hook Handlers', () => {
       const session = service2.getSession('test-session-123');
 
       expect(session?.status).toBe('completed');
-      expect(session?.summary).toBeDefined();
+      expect(typeof session?.summary).toBe('string');
       expect(session?.summary).toContain('Request:');
       expect(session?.summary).toContain('Fix authentication bug');
 
@@ -581,7 +584,8 @@ describe('Hook Handlers', () => {
 
       expect(result.continue).toBe(true);
       expect(result.suppressOutput).toBe(true);
-      expect(result.error).toBeDefined();
+      expect(typeof result.error).toBe('string');
+      expect(result.error!.length).toBeGreaterThan(0);
     });
   });
 
@@ -640,7 +644,8 @@ describe('Hook Handlers', () => {
 
       expect(result.continue).toBe(true);
       expect(result.suppressOutput).toBe(true);
-      expect(result.error).toBeDefined();
+      expect(typeof result.error).toBe('string');
+      expect(result.error!.length).toBeGreaterThan(0);
       stderrSpy.mockRestore();
     });
   });

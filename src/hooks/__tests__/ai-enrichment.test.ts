@@ -60,56 +60,66 @@ describe('AI Enrichment Module', () => {
 
     it('should attempt enrichment when AGENTKITS_AI_ENRICHMENT=true', async () => {
       process.env.AGENTKITS_AI_ENRICHMENT = 'true';
+      resetAIEnrichmentCache();
+      _setCliAvailableForTesting(true);
+      _setRunClaudePrintMockForTesting(() => JSON.stringify({
+        subtitle: 'Mock subtitle',
+        narrative: 'Mock narrative text.',
+        facts: ['Fact 1'],
+        concepts: ['concept1'],
+      }));
       const result = await enrichWithAI('Read', '{"file_path":"test.ts"}', '{}');
-      // Returns enriched data if CLI available, null otherwise
-      if (result !== null) {
-        expect(typeof result.subtitle).toBe('string');
-        expect(typeof result.narrative).toBe('string');
-        expect(Array.isArray(result.facts)).toBe(true);
-        expect(Array.isArray(result.concepts)).toBe(true);
-      }
+      // With CLI available and mock set, should return enriched data
+      expect(result).not.toBeNull();
+      expect(typeof result!.subtitle).toBe('string');
+      expect(typeof result!.narrative).toBe('string');
+      expect(Array.isArray(result!.facts)).toBe(true);
+      expect(Array.isArray(result!.concepts)).toBe(true);
     });
 
     it('should auto-detect when env not set', async () => {
       delete process.env.AGENTKITS_AI_ENRICHMENT;
+      resetAIEnrichmentCache();
+      _setCliAvailableForTesting(true);
+      _setRunClaudePrintMockForTesting(() => JSON.stringify({
+        subtitle: 'Mock subtitle',
+        narrative: 'Mock narrative text.',
+        facts: ['Fact 1'],
+        concepts: ['concept1'],
+      }));
       const result = await enrichWithAI('Read', '{"file_path":"test.ts"}', '{}');
-      // Returns enriched data if CLI available, null otherwise
-      if (result !== null) {
-        expect(typeof result.subtitle).toBe('string');
-        expect(typeof result.narrative).toBe('string');
-      }
+      // With CLI available, mock set, and env not set, should still enrich
+      expect(result).not.toBeNull();
+      expect(typeof result!.subtitle).toBe('string');
+      expect(typeof result!.narrative).toBe('string');
     });
 
     it('should handle AGENTKITS_AI_ENRICHMENT=1', async () => {
       process.env.AGENTKITS_AI_ENRICHMENT = '1';
       resetAIEnrichmentCache();
+      _setCliAvailableForTesting(true);
+      _setRunClaudePrintMockForTesting(() => JSON.stringify({
+        subtitle: 'Mock subtitle',
+        narrative: 'Mock narrative text.',
+        facts: ['Fact 1'],
+        concepts: ['concept1'],
+      }));
       const result = await enrichWithAI('Read', '{}', '{}');
-      // Returns enriched data if CLI available, null otherwise
-      if (result !== null) {
-        expect(typeof result.subtitle).toBe('string');
-      }
+      // With CLI available and mock set, should return enriched data
+      expect(result).not.toBeNull();
+      expect(typeof result!.subtitle).toBe('string');
     });
   });
 
   describe('isAIEnrichmentEnabled (sync)', () => {
-    it('should return false when env=false', () => {
-      process.env.AGENTKITS_AI_ENRICHMENT = 'false';
-      expect(isAIEnrichmentEnabled()).toBe(false);
-    });
-
-    it('should return false when env=0', () => {
-      process.env.AGENTKITS_AI_ENRICHMENT = '0';
-      expect(isAIEnrichmentEnabled()).toBe(false);
-    });
-
-    it('should return true when env=true', () => {
-      process.env.AGENTKITS_AI_ENRICHMENT = 'true';
-      expect(isAIEnrichmentEnabled()).toBe(true);
-    });
-
-    it('should return true when env=1', () => {
-      process.env.AGENTKITS_AI_ENRICHMENT = '1';
-      expect(isAIEnrichmentEnabled()).toBe(true);
+    it.each([
+      ['false', false],
+      ['0', false],
+      ['true', true],
+      ['1', true],
+    ])('should return %s when env=%s', (envValue, expected) => {
+      process.env.AGENTKITS_AI_ENRICHMENT = envValue;
+      expect(isAIEnrichmentEnabled()).toBe(expected);
     });
 
     it('should return true when env not set (auto-detect optimistic)', () => {
@@ -143,19 +153,26 @@ describe('AI Enrichment Module', () => {
     it('should reset cached state', async () => {
       // First call with env=false should return null
       process.env.AGENTKITS_AI_ENRICHMENT = 'false';
+      _setCliAvailableForTesting(false);
+      resetAIEnrichmentCache();
       const disabledResult = await enrichWithAI('Read', '{}', '{}');
       expect(disabledResult).toBeNull();
 
-      // Reset cache
+      // Reset cache and enable CLI with mock
       resetAIEnrichmentCache();
+      _setCliAvailableForTesting(true);
+      _setRunClaudePrintMockForTesting(() => JSON.stringify({
+        subtitle: 'Mock subtitle',
+        narrative: 'Mock narrative text.',
+        facts: ['Fact 1'],
+        concepts: ['concept1'],
+      }));
 
-      // Now with auto-detect, result depends on CLI availability
+      // Now with auto-detect, CLI available, and mock set, should return enriched data
       delete process.env.AGENTKITS_AI_ENRICHMENT;
       const result = await enrichWithAI('Read', '{}', '{}');
-      // If CLI is available, returns enriched data; otherwise null
-      if (result !== null) {
-        expect(typeof result.subtitle).toBe('string');
-      }
+      expect(result).not.toBeNull();
+      expect(typeof result!.subtitle).toBe('string');
     });
   });
 
@@ -237,96 +254,35 @@ describe('AI Enrichment Module', () => {
       expect(result).toBeNull();
     });
 
-    it('should return null when subtitle is not a string', () => {
-      const json = JSON.stringify({
-        subtitle: 123,
-        narrative: 'Test.',
-        facts: [],
-        concepts: [],
-      });
+    it.each([
+      ['subtitle', { subtitle: 123, narrative: 'Test.', facts: [], concepts: [] }],
+      ['narrative', { subtitle: 'Test', narrative: null, facts: [], concepts: [] }],
+      ['facts', { subtitle: 'Test', narrative: 'Test.', facts: 'not array', concepts: [] }],
+      ['concepts', { subtitle: 'Test', narrative: 'Test.', facts: [], concepts: 'not array' }],
+    ])('should return null when %s has invalid type', (_field, obj) => {
+      const json = JSON.stringify(obj);
       const result = parseAIResponse(json);
       expect(result).toBeNull();
     });
 
-    it('should return null when narrative is not a string', () => {
-      const json = JSON.stringify({
-        subtitle: 'Test',
-        narrative: null,
-        facts: [],
-        concepts: [],
-      });
-      const result = parseAIResponse(json);
-      expect(result).toBeNull();
-    });
-
-    it('should return null when facts is not an array', () => {
-      const json = JSON.stringify({
-        subtitle: 'Test',
-        narrative: 'Test.',
-        facts: 'not array',
-        concepts: [],
-      });
-      const result = parseAIResponse(json);
-      expect(result).toBeNull();
-    });
-
-    it('should return null when concepts is not an array', () => {
-      const json = JSON.stringify({
-        subtitle: 'Test',
-        narrative: 'Test.',
-        facts: [],
-        concepts: 'not array',
-      });
-      const result = parseAIResponse(json);
-      expect(result).toBeNull();
-    });
-
-    it('should truncate subtitle to 200 chars', () => {
-      const json = JSON.stringify({
-        subtitle: 'A'.repeat(300),
-        narrative: 'Test.',
-        facts: [],
-        concepts: [],
-      });
+    it.each([
+      ['subtitle', 200, { subtitle: 'A'.repeat(300), narrative: 'Test.', facts: [], concepts: [] }],
+      ['narrative', 500, { subtitle: 'Test', narrative: 'B'.repeat(600), facts: [], concepts: [] }],
+    ])('should truncate %s to %d chars', (field, maxLen, obj) => {
+      const json = JSON.stringify(obj);
       const result = parseAIResponse(json);
       expect(result).not.toBeNull();
-      expect(result!.subtitle.length).toBe(200);
+      expect((result as any)[field].length).toBe(maxLen);
     });
 
-    it('should truncate narrative to 500 chars', () => {
-      const json = JSON.stringify({
-        subtitle: 'Test',
-        narrative: 'B'.repeat(600),
-        facts: [],
-        concepts: [],
-      });
+    it.each([
+      ['facts', 5, { subtitle: 'Test', narrative: 'Test.', facts: ['f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7'], concepts: [] }],
+      ['concepts', 8, { subtitle: 'Test', narrative: 'Test.', facts: [], concepts: ['c1', 'c2', 'c3', 'c4', 'c5', 'c6', 'c7', 'c8', 'c9', 'c10'] }],
+    ])('should limit %s to %d items', (field, maxItems, obj) => {
+      const json = JSON.stringify(obj);
       const result = parseAIResponse(json);
       expect(result).not.toBeNull();
-      expect(result!.narrative.length).toBe(500);
-    });
-
-    it('should limit facts to 5 items', () => {
-      const json = JSON.stringify({
-        subtitle: 'Test',
-        narrative: 'Test.',
-        facts: ['f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7'],
-        concepts: [],
-      });
-      const result = parseAIResponse(json);
-      expect(result).not.toBeNull();
-      expect(result!.facts.length).toBe(5);
-    });
-
-    it('should limit concepts to 8 items', () => {
-      const json = JSON.stringify({
-        subtitle: 'Test',
-        narrative: 'Test.',
-        facts: [],
-        concepts: ['c1', 'c2', 'c3', 'c4', 'c5', 'c6', 'c7', 'c8', 'c9', 'c10'],
-      });
-      const result = parseAIResponse(json);
-      expect(result).not.toBeNull();
-      expect(result!.concepts.length).toBe(8);
+      expect((result as any)[field].length).toBe(maxItems);
     });
 
     it('should compute confidence score from AI-reported value', () => {
@@ -996,15 +952,28 @@ describe('AI Enrichment Module', () => {
   });
 
   describe('error handling', () => {
-    it('should not throw on enrichment failure', async () => {
+    it('should return null when CLI is not available with invalid input', async () => {
       delete process.env.AGENTKITS_AI_ENRICHMENT;
+      _setCliAvailableForTesting(false);
+      resetAIEnrichmentCache();
       // Should gracefully handle any input without throwing
       const result = await enrichWithAI('InvalidTool', 'not json', 'not json');
-      // May return enriched data if CLI is available, or null if not
-      if (result !== null) {
-        expect(typeof result.subtitle).toBe('string');
-        expect(typeof result.narrative).toBe('string');
-      }
+      expect(result).toBeNull();
+    });
+
+    it('should not throw on enrichment failure when CLI is available', async () => {
+      delete process.env.AGENTKITS_AI_ENRICHMENT;
+      _setCliAvailableForTesting(true);
+      resetAIEnrichmentCache();
+      // Should gracefully handle invalid input without throwing
+      const result = await enrichWithAI('InvalidTool', 'not json', 'not json');
+      // Result must be either null (graceful failure) or a valid enriched object
+      // This is a strict assertion - exactly one of these conditions must be true
+      const isNull = result === null;
+      const isValidObject = result !== null &&
+        typeof result.subtitle === 'string' &&
+        typeof result.narrative === 'string';
+      expect(isNull || isValidObject).toBe(true);
     });
 
     it('should respect timeout (returns null on slow response)', async () => {

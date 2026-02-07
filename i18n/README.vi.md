@@ -57,7 +57,7 @@
 | **MCP Server** | 9 công cụ: save, search, timeline, details, recall, list, update, delete, status |
 | **Tự động Thu thập** | Hooks tự động ghi lại ngữ cảnh phiên, sử dụng công cụ, tóm tắt |
 | **Làm giàu bằng AI** | Workers chạy nền làm giàu quan sát với tóm tắt do AI tạo ra |
-| **Tìm kiếm Vector** | Độ tương đồng ngữ nghĩa HNSW với embeddings đa ngôn ngữ (100+ ngôn ngữ) |
+| **Tìm kiếm Vector** | Độ tương đồng ngữ nghĩa sqlite-vec với embeddings đa ngôn ngữ (100+ ngôn ngữ) |
 | **Giao diện Web** | Giao diện trình duyệt để xem, tìm kiếm, thêm, sửa, xóa bộ nhớ |
 | **Tìm kiếm 3 Lớp** | Tiết lộ tiến bộ tiết kiệm ~87% tokens so với tải toàn bộ |
 | **Quản lý Vòng đời** | Tự động nén, lưu trữ và dọn dẹp các phiên cũ |
@@ -634,7 +634,7 @@ AgentKits Memory được kiểm thử kỹ lưỡng với **970 unit test** tr�
 |----------|---------|-------------------|
 | Dịch vụ Bộ nhớ Core | 56 | CRUD, tìm kiếm, phân trang, danh mục, thẻ, nhập/xuất |
 | Backend SQLite | 65 | Schema, migration, FTS5, transaction, xử lý lỗi |
-| Chỉ mục Vector HNSW | 47 | Chèn, tìm kiếm, xóa, lưu trữ, trường hợp biên |
+| Chỉ mục Vector sqlite-vec | 47 | Chèn, tìm kiếm, xóa, lưu trữ, trường hợp biên |
 | Tìm kiếm Hybrid | 44 | FTS + kết hợp vector, chấm điểm, xếp hạng, bộ lọc |
 | Kinh tế Token | 27 | Ngân sách tìm kiếm 3 lớp, cắt ngắn, tối ưu hóa |
 | Hệ thống Embedding | 63 | Bộ nhớ đệm, subprocess, mô hình cục bộ, hỗ trợ CJK |

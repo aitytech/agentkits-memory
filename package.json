@@ -1,6 +1,6 @@
 {
   "name": "@aitytech/agentkits-memory",
-  "version": "2.2.3",
+  "version": "2.3.0",
   "type": "module",
   "description": "Persistent memory system for AI coding assistants via MCP. Works with Claude Code, Cursor, Copilot, Windsurf, Cline.",
   "main": "dist/index.js",
@@ -42,7 +42,8 @@
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.2.29",
-    "better-sqlite3": "^11.0.0"
+    "better-sqlite3": "^11.0.0",
+    "sqlite-vec": "^0.1.7-alpha.2"
   },
   "optionalDependencies": {
     "@xenova/transformers": "^2.17.0"
@@ -70,7 +71,7 @@
     "memory",
     "sqlite",
     "vector-search",
-    "hnsw",
+    "sqlite-vec",
     "claude-code",
     "cursor",
     "copilot",

@@ -57,7 +57,7 @@
 | **MCP Server** | 9 tools: save, search, timeline, details, recall, list, update, delete, status |
 | **Auto-Capture** | Hooks capture session context, tool usage, summaries automatically |
 | **AI Enrichment** | Background workers enrich observations with AI-generated summaries |
-| **Vector Search** | HNSW semantic similarity with multilingual embeddings (100+ languages) |
+| **Vector Search** | sqlite-vec semantic similarity with multilingual embeddings (100+ languages) |
 | **Web Viewer** | Browser UI to view, search, add, edit, delete memories |
 | **3-Layer Search** | Progressive disclosure saves ~87% tokens vs fetching everything |
 | **Lifecycle Mgmt** | Auto-compress, archive, and clean up old sessions |
@@ -634,7 +634,7 @@ AgentKits Memory is thoroughly tested with **970 unit tests** across 21 test sui
 |----------|-------|----------------|
 | Core Memory Service | 56 | CRUD, search, pagination, categories, tags, import/export |
 | SQLite Backend | 65 | Schema, migrations, FTS5, transactions, error handling |
-| HNSW Vector Index | 47 | Insert, search, delete, persistence, edge cases |
+| sqlite-vec Vector Index | 47 | Insert, search, delete, persistence, edge cases |
 | Hybrid Search | 44 | FTS + vector fusion, scoring, ranking, filters |
 | Token Economics | 27 | 3-layer search budgets, truncation, optimization |
 | Embedding System | 63 | Cache, subprocess, local models, CJK support |
